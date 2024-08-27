@@ -9,6 +9,8 @@ use super::synic::ProcessorSynic;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use hvdef::HvRegisterVpAssistPage;
+use hvdef::HvVpVtlControl;
+use hvdef::HvVtlEntryReason;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HV_PAGE_SIZE_USIZE;
 use hvdef::HV_REFERENCE_TSC_SEQUENCE_INVALID;
@@ -289,6 +291,7 @@ impl ProcessorVtlHv {
                             != self.vp_assist_page.gpa_page_number())
                 {
                     let gpa = vp_assist_page.gpa_page_number() * HV_PAGE_SIZE;
+                    tracing::info!("clearing vp assist page at gpa {:x}", gpa);
                     if let Err(err) = self.guest_memory.fill_at(gpa, 0, HV_PAGE_SIZE_USIZE) {
                         tracelimit::warn_ratelimited!(
                             gpa,
@@ -298,6 +301,7 @@ impl ProcessorVtlHv {
                         return Err(MsrError::InvalidAccess);
                     }
                 }
+                tracing::info!("setting vp assist page to {:?}", vp_assist_page);
                 self.vp_assist_page = vp_assist_page;
             }
             msr @ 0x40000080..=0x4000009f => {
@@ -456,6 +460,36 @@ impl ProcessorVtlHv {
             }
             false
         }
+    }
+
+    /// Get the register values to restore on vtl return
+    pub fn return_registers(&self) -> [u64; 2] {
+        let gpa = (self.vp_assist_page.gpa_page_number() * HV_PAGE_SIZE)
+            + offset_of!(hvdef::HvVpAssistPage, vtl_control) as u64;
+
+        let v: HvVpVtlControl = self
+            .guest_memory
+            .read_plain(gpa)
+            .expect("reading vp assist page should not fail"); // TODO return an error
+
+        v.registers
+    }
+
+    /// Set the reason for the vtl return into the vp assist page
+    pub fn set_return_reason(&self, reason: HvVtlEntryReason) {
+        tracing::info!(
+            "Writing entry reason, vp assist page is at gpn {:x}",
+            self.vp_assist_page.gpa_page_number()
+        );
+
+        let gpa = (self.vp_assist_page.gpa_page_number() * HV_PAGE_SIZE)
+            + offset_of!(hvdef::HvVpAssistPage, vtl_control) as u64
+            + offset_of!(HvVpVtlControl, entry_reason) as u64;
+
+        let v = reason.0;
+        self.guest_memory
+            .write_plain(gpa, &v)
+            .expect("cannot fail writing the entry reason"); // TODO error handling
     }
 }
 

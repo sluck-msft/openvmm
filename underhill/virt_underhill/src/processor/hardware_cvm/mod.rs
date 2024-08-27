@@ -17,6 +17,8 @@ use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvResult;
+use hvdef::HvVtlEntryReason;
+use hvdef::HvX64RegisterName;
 use hvdef::Vtl;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -245,18 +247,27 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         vtl: Vtl,
     ) -> HvResult<hvdef::HvRegisterValue> {
         match name.into() {
-            hvdef::HvX64RegisterName::VsmCodePageOffsets => Ok(u64::from(
+            HvX64RegisterName::VsmCodePageOffsets => Ok(u64::from(
                 self.vp
                     .hv(vtl)
                     .expect("hv emulator exists for cvm")
                     .vsm_code_page_offsets(true),
             )
             .into()),
-            hvdef::HvX64RegisterName::VsmCapabilities => Ok(u64::from(
+            HvX64RegisterName::VsmCapabilities => Ok(u64::from(
                 hvdef::HvRegisterVsmCapabilities::new().with_deny_lower_vtl_startup(true),
             )
             .into()),
-            _ => Err(HvError::InvalidParameter),
+            HvX64RegisterName::VpAssistPage => Ok(self
+                .vp
+                .hv(vtl)
+                .expect("hv emulator exists for cvm")
+                .vp_assist_page()
+                .into()),
+            _ => {
+                tracing::error!("getvpregister does not support {:x?}", name);
+                Err(HvError::InvalidParameter)
+            }
         }
     }
 
@@ -359,19 +370,58 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     }
 
     pub fn hcvm_vtl_call(&mut self) {
-        tracing::trace!("handling vtl call");
+        tracing::info!("handling vtl call");
 
-        self.vp.switch_vtl(Vtl::Vtl1);
+        self.vp.switch_to_vtl(Vtl::Vtl1);
+
         self.vp
-            .cvm_guest_vsm
-            .as_mut()
-            .expect("has guest vsm state")
-            .current_vtl = Vtl::Vtl1;
+            .hv(Vtl::Vtl1)
+            .unwrap()
+            .set_return_reason(HvVtlEntryReason::VTL_CALL);
 
         // TODO GUEST_VSM: Force reevaluation of the VTL 1 APIC in case delivery of
         // low-priority interrupts was suppressed while in VTL 0.
 
         // TODO GUEST_VSM: Track which VTLs are runnable and mark VTL as runnable
+    }
+
+    pub fn hcvm_is_vtl_return_allowed(&self) -> bool {
+        tracing::trace!("checking if vtl return is allowed");
+
+        // Only allowed from VTL 1
+        self.vp
+            .cvm_guest_vsm
+            .as_ref()
+            .expect("has guest vsm state")
+            .current_vtl
+            != Vtl::Vtl0
+    }
+
+    pub fn hcvm_vtl_return(&mut self, fast_return: bool) {
+        tracing::info!("handling vtl return");
+
+        self.vp.unlock_tlb_lock(Vtl::Vtl1);
+
+        self.vp.switch_to_vtl(Vtl::Vtl0);
+
+        // TODO CVM GUEST_VSM:
+        // - rewind interrupts
+        // - reset VINA
+
+        if !fast_return {
+            // TODO CVM GUEST_VSM: do we really need to go into the kernel to set these registers
+            tracing::info!("setting registers based on vp assist page");
+            let [rax, rcx] = self.vp.hv(Vtl::Vtl0).unwrap().return_registers();
+            tracing::info!("based on vp assist page, setting rax to {:x}", rax);
+            self.vp
+                .runner
+                .set_vp_register(HvX64RegisterName::Rax, rax.into())
+                .expect("setting a register shouldn't fail");
+            self.vp
+                .runner
+                .set_vp_register(HvX64RegisterName::Rcx, rcx.into())
+                .expect("setting a register shouldn't fail");
+        }
     }
 }
 
@@ -396,13 +446,29 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters
         let target_vtl = vtl.unwrap_or(self.vp.last_vtl());
 
         for (i, reg) in registers.iter().enumerate() {
-            if reg.name == hvdef::HvX64RegisterName::VsmPartitionConfig.into() {
-                let value = HvRegisterVsmPartitionConfig::from(reg.value.as_u64());
-                self.vp
-                    .set_vsm_partition_config(value, target_vtl)
-                    .map_err(|e| (e, i))?;
-            } else {
-                return Err((HvError::InvalidParameter, i));
+            match HvX64RegisterName::from(reg.name) {
+                HvX64RegisterName::VsmPartitionConfig => {
+                    self.vp
+                        .set_vsm_partition_config(
+                            HvRegisterVsmPartitionConfig::from(reg.value.as_u64()),
+                            target_vtl,
+                        )
+                        .map_err(|e| (e, i))?;
+                }
+                HvX64RegisterName::VpAssistPage if self.vp.partition.is_hardware_isolated() => {
+                    self.vp
+                        .hv_mut(target_vtl)
+                        .expect("has hv emulator")
+                        .msr_write(hvdef::HV_X64_MSR_VP_ASSIST_PAGE, reg.value.as_u64())
+                        .unwrap() // TODO: fix error handling
+                }
+                _ => {
+                    tracing::error!(
+                        "guest invoked SetVpRegisters with register {:?} != VsmPartitionConfig",
+                        reg
+                    );
+                    return Err((HvError::InvalidParameter, i));
+                }
             }
         }
 
@@ -490,6 +556,15 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         guest_vsm_inner.deny_lower_vtl_startup = value.deny_lower_vtl_startup();
 
         Ok(())
+    }
+
+    fn switch_to_vtl(&mut self, target_vtl: Vtl) {
+        B::switch_vtl_state(self, target_vtl);
+        self.runner.set_exit_vtl(target_vtl);
+        self.cvm_guest_vsm
+            .as_mut()
+            .expect("has guest vsm state")
+            .current_vtl = target_vtl;
     }
 }
 

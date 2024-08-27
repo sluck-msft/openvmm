@@ -1053,13 +1053,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
 
         self.request_sint_notifications(vtl, pending_sints);
     }
-
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
-    fn switch_vtl(&mut self, target_vtl: Vtl) {
-        T::switch_vtl_state(self, target_vtl);
-
-        self.runner.set_exit_vtl(target_vtl);
-    }
 }
 
 fn signal_mnf(dev: &impl CpuIo, connection_id: u32) {
