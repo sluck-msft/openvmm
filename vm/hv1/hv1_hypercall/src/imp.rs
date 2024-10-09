@@ -568,7 +568,7 @@ impl<T: VtlReturn + VtlSwitchOps> HypercallDispatch<HvVtlReturn> for T {
         {
             // Advance the instruction pointer and issue the vtl return.
             self.advance_ip();
-            tracing::info!("vtl return input is {:x}", input);
+            // tracing::info!("vtl return input is {:x}", input);
             self.vtl_return(input & 1 != 0);
         } else {
             // Inject an error.

@@ -370,7 +370,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     }
 
     pub fn hcvm_vtl_call(&mut self) {
-        tracing::info!("handling vtl call");
+        tracing::debug!("handling vtl call");
 
         self.vp.switch_to_vtl(Vtl::Vtl1);
 
@@ -398,7 +398,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     }
 
     pub fn hcvm_vtl_return(&mut self, fast_return: bool) {
-        tracing::info!("handling vtl return");
+        tracing::debug!("handling vtl return");
 
         self.vp.unlock_tlb_lock(Vtl::Vtl1);
 
@@ -410,9 +410,9 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
 
         if !fast_return {
             // TODO CVM GUEST_VSM: do we really need to go into the kernel to set these registers
-            tracing::info!("setting registers based on vp assist page");
+            // tracing::info!("setting registers based on vp assist page");
             let [rax, rcx] = self.vp.hv(Vtl::Vtl0).unwrap().return_registers();
-            tracing::info!("based on vp assist page, setting rax to {:x}", rax);
+            // tracing::info!("based on vp assist page, setting rax to {:x}", rax);
             self.vp
                 .runner
                 .set_vp_register(HvX64RegisterName::Rax, rax.into())

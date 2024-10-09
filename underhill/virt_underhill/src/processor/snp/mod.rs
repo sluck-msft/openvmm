@@ -419,9 +419,9 @@ impl BackingPrivate for SnpBacked {
 
         let (current_vmsa, mut target_vmsa) = this.runner.vmsas_for_copy(current_vtl, target_vtl);
 
-        tracing::info!("setting rax to {:x}", current_vmsa.rax());
-        tracing::info!("rip for next vtl is {:x}", target_vmsa.rip());
-        tracing::info!("gs for next vtl is {:x}", target_vmsa.gs().base);
+        // tracing::info!("setting rax to {:x}", current_vmsa.rax());
+        // tracing::info!("rip for next vtl is {:x}", target_vmsa.rip());
+        // tracing::info!("gs for next vtl is {:x}", target_vmsa.gs().base);
         target_vmsa.set_rax(current_vmsa.rax());
         target_vmsa.set_rbx(current_vmsa.rbx());
         target_vmsa.set_rcx(current_vmsa.rcx());
@@ -899,14 +899,20 @@ impl UhProcessor<'_, SnpBacked> {
         self.unlock_tlb_lock(Vtl::Vtl2);
         let tlb_halt = self.should_halt_for_tlb_unlock(lower_vtl);
 
-        self.runner.set_halted(
-            self.backing.lapics[Vtl::Vtl0].halted
-                || self.backing.lapics[Vtl::Vtl0].startup_suspend
-                || tlb_halt,
-        );
+        let halt = self.backing.lapics[lower_vtl].halted
+            || self.backing.lapics[Vtl::Vtl0].startup_suspend
+            || tlb_halt;
+
+        if halt && lower_vtl == Vtl::Vtl1 {
+            tracelimit::warn_ratelimited!(
+                "About to halt vtl 1, which is usually unexpected. This will freeze the guest until vtl 1 receives an interrupt."
+            );
+        }
+
+        self.runner.set_halted(halt);
 
         // Set the lazy EOI bit just before running.
-        let lazy_eoi = self.sync_lazy_eoi(Vtl::Vtl0);
+        let lazy_eoi = self.sync_lazy_eoi(lower_vtl);
 
         let mut has_intercept = self
             .runner
