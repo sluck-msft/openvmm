@@ -2673,6 +2673,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
 
         // BUGBUG: cr8 affects interrupts but hcl asserts setting this to false.
         // ignore for now
+        // TODO TDX GUEST VSM
         tracing::trace!(cr8, "IGNORING cr8 set_registers");
 
         self.vp.write_efer(*efer)?;
