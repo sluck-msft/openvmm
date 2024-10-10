@@ -24,6 +24,8 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use std::iter::zip;
 use virt::io::CpuIo;
+use virt::vp::AccessVpState;
+use virt::Processor;
 use zerocopy::FromZeroes;
 
 #[derive(Inspect, InspectMut)]
@@ -32,7 +34,7 @@ pub struct GuestVsmVpState {
     pub current_vtl: Vtl,
 }
 
-impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
+impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     pub fn hcvm_enable_partition_vtl(
         &mut self,
         partition_id: u64,
@@ -241,11 +243,93 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         Ok(())
     }
 
+    fn validate_register_access(&mut self, vtl: Vtl, name: hvdef::HvRegisterName) -> HvResult<()> {
+        match name.into() {
+            HvX64RegisterName::Star
+            | HvX64RegisterName::Lstar
+            | HvX64RegisterName::Cstar
+            | HvX64RegisterName::SysenterCs
+            | HvX64RegisterName::SysenterEip
+            | HvX64RegisterName::SysenterEsp
+            | HvX64RegisterName::Sfmask
+            | HvX64RegisterName::Xfem
+            | HvX64RegisterName::KernelGsBase
+            | HvX64RegisterName::Efer
+            | HvX64RegisterName::Cr0
+            | HvX64RegisterName::Cr2
+            | HvX64RegisterName::Cr3
+            | HvX64RegisterName::Cr4
+            | HvX64RegisterName::Cr8
+            | HvX64RegisterName::Es
+            | HvX64RegisterName::Cs
+            | HvX64RegisterName::Ss
+            | HvX64RegisterName::Ds
+            | HvX64RegisterName::Fs
+            | HvX64RegisterName::Gs
+            | HvX64RegisterName::Tr
+            | HvX64RegisterName::Ldtr
+            | HvX64RegisterName::Gdtr
+            | HvX64RegisterName::Idtr
+            | HvX64RegisterName::Rip
+            | HvX64RegisterName::Rflags
+            | HvX64RegisterName::Rax
+            | HvX64RegisterName::Rcx
+            | HvX64RegisterName::Rdx
+            | HvX64RegisterName::Rbx
+            | HvX64RegisterName::Rsp
+            | HvX64RegisterName::Rbp
+            | HvX64RegisterName::Rsi
+            | HvX64RegisterName::Rdi
+            | HvX64RegisterName::R8
+            | HvX64RegisterName::R9
+            | HvX64RegisterName::R10
+            | HvX64RegisterName::R11
+            | HvX64RegisterName::R12
+            | HvX64RegisterName::R13
+            | HvX64RegisterName::R14
+            | HvX64RegisterName::R15 => {
+                // Architectural registers can only be accessed by a higher VTL.
+                if vtl >= self.vp.last_vtl() {
+                    return Err(HvError::AccessDenied);
+                }
+                Ok(())
+            }
+            HvX64RegisterName::TscAux => {
+                // Architectural registers can only be accessed by a higher VTL.
+                if vtl >= self.vp.last_vtl() {
+                    return Err(HvError::AccessDenied);
+                }
+
+                if self.vp.partition.caps.tsc_aux {
+                    Ok(())
+                } else {
+                    Err(HvError::InvalidParameter)
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+
     fn get_vp_register(
         &mut self,
         name: hvdef::HvRegisterName,
         vtl: Vtl,
     ) -> HvResult<hvdef::HvRegisterValue> {
+        self.validate_register_access(vtl, name)?;
+        // TODO: when get vp register i.e. in access vp state gets refactored,
+        // clean this up. Also, seems like some of this could combine with some
+        // of the msr handling.
+
+        let (registers, msrs, xcr, tsc_aux) = {
+            let mut vp_state = self.vp.access_state(vtl);
+            (
+                vp_state.registers().unwrap(),
+                vp_state.virtual_msrs().unwrap(),
+                vp_state.xcr().unwrap(),
+                vp_state.tsc_aux().unwrap(),
+            )
+        };
+
         match name.into() {
             HvX64RegisterName::VsmCodePageOffsets => Ok(u64::from(
                 self.vp
@@ -264,6 +348,52 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 .expect("hv emulator exists for cvm")
                 .vp_assist_page()
                 .into()),
+            // TODO GUEST VSM: add the synic registers (definitely missing VINA
+            // and ApicBase)
+            HvX64RegisterName::Star => Ok(msrs.star.into()),
+            HvX64RegisterName::Lstar => Ok(msrs.lstar.into()),
+            HvX64RegisterName::Cstar => Ok(msrs.cstar.into()),
+            HvX64RegisterName::SysenterCs => Ok(msrs.sysenter_cs.into()),
+            HvX64RegisterName::SysenterEip => Ok(msrs.sysenter_eip.into()),
+            HvX64RegisterName::SysenterEsp => Ok(msrs.sysenter_esp.into()),
+            HvX64RegisterName::Sfmask => Ok(msrs.sfmask.into()),
+            HvX64RegisterName::KernelGsBase => Ok(msrs.kernel_gs_base.into()),
+            HvX64RegisterName::Xfem => Ok(xcr.value.into()),
+            HvX64RegisterName::TscAux => Ok(tsc_aux.value.into()),
+            HvX64RegisterName::Efer => Ok(registers.efer.into()),
+            HvX64RegisterName::Cr0 => Ok(registers.cr0.into()),
+            HvX64RegisterName::Cr2 => Ok(registers.cr2.into()),
+            HvX64RegisterName::Cr3 => Ok(registers.cr3.into()),
+            HvX64RegisterName::Cr4 => Ok(registers.cr4.into()),
+            HvX64RegisterName::Cr8 => Ok(registers.cr8.into()),
+            HvX64RegisterName::Es => Ok(hvdef::HvX64SegmentRegister::from(registers.es).into()),
+            HvX64RegisterName::Cs => Ok(hvdef::HvX64SegmentRegister::from(registers.cs).into()),
+            HvX64RegisterName::Ss => Ok(hvdef::HvX64SegmentRegister::from(registers.ss).into()),
+            HvX64RegisterName::Ds => Ok(hvdef::HvX64SegmentRegister::from(registers.ds).into()),
+            HvX64RegisterName::Fs => Ok(hvdef::HvX64SegmentRegister::from(registers.fs).into()),
+            HvX64RegisterName::Gs => Ok(hvdef::HvX64SegmentRegister::from(registers.gs).into()),
+            HvX64RegisterName::Tr => Ok(hvdef::HvX64SegmentRegister::from(registers.tr).into()),
+            HvX64RegisterName::Ldtr => Ok(hvdef::HvX64SegmentRegister::from(registers.ldtr).into()),
+            HvX64RegisterName::Gdtr => Ok(hvdef::HvX64TableRegister::from(registers.gdtr).into()),
+            HvX64RegisterName::Idtr => Ok(hvdef::HvX64TableRegister::from(registers.idtr).into()),
+            HvX64RegisterName::Rip => Ok(registers.rip.into()),
+            HvX64RegisterName::Rflags => Ok(registers.rflags.into()),
+            HvX64RegisterName::Rax => Ok(registers.rax.into()),
+            HvX64RegisterName::Rcx => Ok(registers.rcx.into()),
+            HvX64RegisterName::Rdx => Ok(registers.rdx.into()),
+            HvX64RegisterName::Rbx => Ok(registers.rbx.into()),
+            HvX64RegisterName::Rsp => Ok(registers.rsp.into()),
+            HvX64RegisterName::Rbp => Ok(registers.rbp.into()),
+            HvX64RegisterName::Rsi => Ok(registers.rsi.into()),
+            HvX64RegisterName::Rdi => Ok(registers.rdi.into()),
+            HvX64RegisterName::R8 => Ok(registers.r8.into()),
+            HvX64RegisterName::R9 => Ok(registers.r9.into()),
+            HvX64RegisterName::R10 => Ok(registers.r10.into()),
+            HvX64RegisterName::R11 => Ok(registers.r11.into()),
+            HvX64RegisterName::R12 => Ok(registers.r12.into()),
+            HvX64RegisterName::R13 => Ok(registers.r13.into()),
+            HvX64RegisterName::R14 => Ok(registers.r14.into()),
+            HvX64RegisterName::R15 => Ok(registers.r15.into()),
             _ => {
                 tracing::error!("getvpregister does not support {:x?}", name);
                 Err(HvError::InvalidParameter)
@@ -271,59 +401,121 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         }
     }
 
-    fn retarget_physical_interrupt(
+    fn set_vp_register(
         &mut self,
-        device_id: u64,
-        address: u64,
-        data: u32,
-        vector: u32,
-        multicast: bool,
-        target_processors: &[u32],
+        reg: &hvdef::hypercall::HvRegisterAssoc,
+        vtl: Vtl,
     ) -> HvResult<()> {
-        self.vp.partition.hcl.retarget_device_interrupt(
-            device_id,
-            hvdef::hypercall::InterruptEntry {
-                source: hvdef::hypercall::HvInterruptSource::MSI,
-                rsvd: 0,
-                data: [address as u32, data],
-            },
-            vector,
-            multicast,
-            target_processors,
-        )
-    }
+        self.validate_register_access(vtl, reg.name)?;
+        // TODO: when access vp state has support for single registers, clean
+        // this up. Also, this seems like it could combine with some of the MSR
+        // handling
+        match HvX64RegisterName::from(reg.name) {
+            HvX64RegisterName::VsmPartitionConfig => self.vp.set_vsm_partition_config(
+                HvRegisterVsmPartitionConfig::from(reg.value.as_u64()),
+                vtl,
+            ),
+            HvX64RegisterName::VpAssistPage if self.vp.partition.is_hardware_isolated() => self
+                .vp
+                .hv_mut(vtl)
+                .expect("has hv emulator")
+                .msr_write(hvdef::HV_X64_MSR_VP_ASSIST_PAGE, reg.value.as_u64())
+                .map_err(|_| HvError::InvalidRegisterValue),
+            // TODO GUEST VSM: synic registers (definitely missing cr8)
+            HvX64RegisterName::Star
+            | HvX64RegisterName::Cstar
+            | HvX64RegisterName::Lstar
+            | HvX64RegisterName::SysenterCs
+            | HvX64RegisterName::SysenterEip
+            | HvX64RegisterName::SysenterEsp
+            | HvX64RegisterName::Sfmask => {
+                let mut msrs = self.vp.access_state(vtl).virtual_msrs().unwrap();
+                match HvX64RegisterName::from(reg.name) {
+                    HvX64RegisterName::Star => msrs.star = reg.value.as_u64(),
+                    HvX64RegisterName::Cstar => msrs.cstar = reg.value.as_u64(),
+                    HvX64RegisterName::Lstar => msrs.lstar = reg.value.as_u64(),
+                    HvX64RegisterName::SysenterCs => msrs.sysenter_cs = reg.value.as_u64(),
+                    HvX64RegisterName::SysenterEip => msrs.sysenter_eip = reg.value.as_u64(),
+                    HvX64RegisterName::SysenterEsp => msrs.sysenter_esp = reg.value.as_u64(),
+                    HvX64RegisterName::Sfmask => msrs.sfmask = reg.value.as_u64(),
+                    _ => unreachable!(),
+                }
+                self.vp.access_state(vtl).set_virtual_msrs(&msrs).unwrap();
+                Ok(())
+            }
+            HvX64RegisterName::TscAux => {
+                self.vp
+                    .access_state(vtl)
+                    .set_tsc_aux(&virt::vp::TscAux {
+                        value: reg.value.as_u64(),
+                    })
+                    .unwrap();
+                Ok(())
+            }
 
-    pub fn hcvm_retarget_interrupt(
-        &mut self,
-        device_id: u64,
-        address: u64,
-        data: u32,
-        vector: u32,
-        multicast: bool,
-        target_processors: &[u32],
-    ) -> HvResult<()> {
-        // It is unknown whether the interrupt is physical or virtual, so try both. Note that the
-        // actual response from the hypervisor can't really be trusted so:
-        // 1. Always invoke the virtual interrupt retargeting.
-        // 2. A failure from the physical interrupt retargeting is not necessarily a sign of a
-        // malicious hypervisor or a buggy guest, since the target could simply be a virtual one.
-        let hv_result = self.retarget_physical_interrupt(
-            device_id,
-            address,
-            data,
-            vector,
-            multicast,
-            target_processors,
-        );
-        let virtual_result = self.retarget_virtual_interrupt(
-            device_id,
-            address,
-            data,
-            vector,
-            multicast,
-            target_processors,
-        );
-        hv_result.or(virtual_result)
+            HvX64RegisterName::Dr3 | HvX64RegisterName::Dr7 => {
+                let mut debug_registers = self.vp.access_state(vtl).debug_regs().unwrap();
+                match HvX64RegisterName::from(reg.name) {
+                    HvX64RegisterName::Dr3 => debug_registers.dr3 = reg.value.as_u64(),
+                    HvX64RegisterName::Dr7 => debug_registers.dr7 = reg.value.as_u64(),
+                    _ => unreachable!(),
+                }
+
+                self.vp
+                    .access_state(vtl)
+                    .set_debug_regs(&debug_registers)
+                    .unwrap();
+                Ok(())
+            }
+            HvX64RegisterName::Pat => {
+                let mut cache_control = self.vp.access_state(vtl).cache_control().unwrap();
+                cache_control.msr_cr_pat = reg.value.as_u64();
+                self.vp
+                    .access_state(vtl)
+                    .set_cache_control(&cache_control)
+                    .unwrap();
+                Ok(())
+            }
+            HvX64RegisterName::Efer
+            | HvX64RegisterName::Cr0
+            | HvX64RegisterName::Cr4
+            | HvX64RegisterName::Ldtr
+            | HvX64RegisterName::Gdtr
+            | HvX64RegisterName::Idtr
+            | HvX64RegisterName::Rip
+            | HvX64RegisterName::Rflags
+            | HvX64RegisterName::Rsp => {
+                let mut registers = self.vp.access_state(vtl).registers().unwrap();
+                match HvX64RegisterName::from(reg.name) {
+                    HvX64RegisterName::Efer => registers.efer = reg.value.as_u64(),
+                    HvX64RegisterName::Cr0 => registers.cr0 = reg.value.as_u64(),
+                    HvX64RegisterName::Cr4 => registers.cr4 = reg.value.as_u64(),
+                    HvX64RegisterName::Ldtr => {
+                        registers.ldtr = hvdef::HvX64SegmentRegister::from(reg.value).into()
+                    }
+                    HvX64RegisterName::Gdtr => {
+                        registers.gdtr = hvdef::HvX64TableRegister::from(reg.value).into()
+                    }
+                    HvX64RegisterName::Idtr => {
+                        registers.idtr = hvdef::HvX64TableRegister::from(reg.value).into()
+                    }
+                    HvX64RegisterName::Rip => registers.rip = reg.value.as_u64(),
+                    HvX64RegisterName::Rflags => registers.rflags = reg.value.as_u64(),
+                    HvX64RegisterName::Rsp => registers.rsp = reg.value.as_u64(),
+                    _ => unreachable!(),
+                }
+                self.vp.access_state(vtl).set_registers(&registers).unwrap();
+                // TODO GUEST VSM: interrupt rewinding
+                Ok(())
+            }
+            _ => {
+                tracing::error!(
+                    "guest invoked SetVpRegisters with register {:?} != VsmPartitionConfig",
+                    reg
+                );
+                Err(HvError::InvalidParameter)
+            }
+        }
     }
 
     pub fn hcvm_validate_flush_inputs(
@@ -425,6 +617,62 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     }
 }
 
+impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
+    fn retarget_physical_interrupt(
+        &mut self,
+        device_id: u64,
+        address: u64,
+        data: u32,
+        vector: u32,
+        multicast: bool,
+        target_processors: &[u32],
+    ) -> HvResult<()> {
+        self.vp.partition.hcl.retarget_device_interrupt(
+            device_id,
+            hvdef::hypercall::InterruptEntry {
+                source: hvdef::hypercall::HvInterruptSource::MSI,
+                rsvd: 0,
+                data: [address as u32, data],
+            },
+            vector,
+            multicast,
+            target_processors,
+        )
+    }
+
+    pub fn hcvm_retarget_interrupt(
+        &mut self,
+        device_id: u64,
+        address: u64,
+        data: u32,
+        vector: u32,
+        multicast: bool,
+        target_processors: &[u32],
+    ) -> HvResult<()> {
+        // It is unknown whether the interrupt is physical or virtual, so try both. Note that the
+        // actual response from the hypervisor can't really be trusted so:
+        // 1. Always invoke the virtual interrupt retargeting.
+        // 2. A failure from the physical interrupt retargeting is not necessarily a sign of a
+        // malicious hypervisor or a buggy guest, since the target could simply be a virtual one.
+        let hv_result = self.retarget_physical_interrupt(
+            device_id,
+            address,
+            data,
+            vector,
+            multicast,
+            target_processors,
+        );
+        let virtual_result = self.retarget_virtual_interrupt(
+            device_id,
+            address,
+            data,
+            vector,
+            multicast,
+            target_processors,
+        );
+        hv_result.or(virtual_result)
+    }
+}
 impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters
     for UhHypercallHandler<'_, '_, T, B>
 {
@@ -446,30 +694,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters
         let target_vtl = vtl.unwrap_or(self.vp.last_vtl());
 
         for (i, reg) in registers.iter().enumerate() {
-            match HvX64RegisterName::from(reg.name) {
-                HvX64RegisterName::VsmPartitionConfig => {
-                    self.vp
-                        .set_vsm_partition_config(
-                            HvRegisterVsmPartitionConfig::from(reg.value.as_u64()),
-                            target_vtl,
-                        )
-                        .map_err(|e| (e, i))?;
-                }
-                HvX64RegisterName::VpAssistPage if self.vp.partition.is_hardware_isolated() => {
-                    self.vp
-                        .hv_mut(target_vtl)
-                        .expect("has hv emulator")
-                        .msr_write(hvdef::HV_X64_MSR_VP_ASSIST_PAGE, reg.value.as_u64())
-                        .unwrap() // TODO: fix error handling
-                }
-                _ => {
-                    tracing::error!(
-                        "guest invoked SetVpRegisters with register {:?} != VsmPartitionConfig",
-                        reg
-                    );
-                    return Err((HvError::InvalidParameter, i));
-                }
-            }
+            self.set_vp_register(reg, target_vtl).map_err(|e| (e, i))?;
         }
 
         Ok(())
