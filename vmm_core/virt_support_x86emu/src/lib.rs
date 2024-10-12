@@ -5,4 +5,3 @@
 #![forbid(unsafe_code)]
 
 pub mod emulate;
-pub mod translate;

@@ -44,6 +44,7 @@ use virt::state::StateElement;
 use virt::vp;
 use virt::vp::AccessVpState;
 use virt::vp::Registers;
+use virt::x86::translate::TranslationRegisters;
 use virt::x86::MsrError;
 use virt::x86::MsrErrorExt;
 use virt::x86::SegmentRegister;
@@ -60,7 +61,6 @@ use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::emulate::EmulatorSupport;
 use virt_support_x86emu::emulate::TranslateGvaSupport;
 use virt_support_x86emu::emulate::TranslateMode;
-use virt_support_x86emu::translate::TranslationRegisters;
 use vmcore::vmtime::VmTimeAccess;
 use vtl_array::VtlArray;
 use x86defs::apic::X2APIC_MSR_BASE;
@@ -2099,6 +2099,7 @@ impl TranslateGvaSupport for UhProcessor<'_, TdxBacked> {
     }
 
     fn registers(&mut self) -> Result<TranslationRegisters, Self::Error> {
+        // TODO TDX GUEST VSM: target VTL 1
         let cr0 = self.backing.cr0.read(&self.runner);
         let cr4 = self.backing.cr4.read(&self.runner);
         let efer = self.backing.efer;
@@ -2114,7 +2115,7 @@ impl TranslateGvaSupport for UhProcessor<'_, TdxBacked> {
             cr3,
             ss,
             rflags,
-            encryption_mode: virt_support_x86emu::translate::EncryptionMode::Vtom(
+            encryption_mode: virt::x86::translate::EncryptionMode::Vtom(
                 self.partition.caps.vtom.unwrap(),
             ),
         })

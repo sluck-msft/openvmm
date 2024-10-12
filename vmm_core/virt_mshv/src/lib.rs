@@ -55,6 +55,7 @@ use thiserror::Error;
 use virt::io::CpuIo;
 use virt::irqcon::MsiRequest;
 use virt::x86::max_physical_address_size_from_cpuid;
+use virt::x86::translate::TranslationRegisters;
 use virt::Hv1;
 use virt::NeedsYield;
 use virt::PartitionAccessState;
@@ -70,7 +71,6 @@ use virt_support_x86emu::emulate::EmuTranslateResult;
 use virt_support_x86emu::emulate::EmulatorSupport;
 use virt_support_x86emu::emulate::TranslateGvaSupport;
 use virt_support_x86emu::emulate::TranslateMode;
-use virt_support_x86emu::translate::TranslationRegisters;
 use vmcore::interrupt::Interrupt;
 use vmcore::synic::GuestEventPort;
 use zerocopy::AsBytes;
@@ -959,7 +959,7 @@ impl TranslateGvaSupport for MshvEmulationState<'_> {
             cr3: cr3.as_u64(),
             rflags: rflags.as_u64(),
             ss: from_seg(ss.as_segment()),
-            encryption_mode: virt_support_x86emu::translate::EncryptionMode::None,
+            encryption_mode: virt::x86::translate::EncryptionMode::None,
         })
     }
 }
