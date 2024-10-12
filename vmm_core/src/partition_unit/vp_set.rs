@@ -1171,10 +1171,10 @@ mod vp_state {
     use anyhow::Context;
     use guestmem::GuestMemory;
     use hvdef::Vtl;
+    use virt::x86::translate::translate_gva_to_gpa;
+    use virt::x86::translate::TranslateFlags;
+    use virt::x86::translate::TranslationRegisters;
     use virt::x86::vp::Registers;
-    use virt_support_x86emu::translate::translate_gva_to_gpa;
-    use virt_support_x86emu::translate::TranslateFlags;
-    use virt_support_x86emu::translate::TranslationRegisters;
 
     fn translate_gva(
         guest_memory: &GuestMemory,
@@ -1192,7 +1192,7 @@ mod vp_state {
             ss: state.ss.into(),
             // For debug translation, don't worry about accidentally reading
             // page tables from shared memory.
-            encryption_mode: virt_support_x86emu::translate::EncryptionMode::None,
+            encryption_mode: virt::x86::translate::EncryptionMode::None,
         };
         let flags = TranslateFlags {
             validate_execute: false,
@@ -1200,7 +1200,7 @@ mod vp_state {
             validate_write: false,
             override_smap: false,
             enforce_smap: false,
-            privilege_check: virt_support_x86emu::translate::TranslatePrivilegeCheck::None,
+            privilege_check: virt::x86::translate::TranslatePrivilegeCheck::None,
             set_page_table_bits: false,
         };
         Ok(translate_gva_to_gpa(guest_memory, gva, &registers, flags)?)
