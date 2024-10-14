@@ -226,9 +226,7 @@ mod private {
         /// This is used for hypervisor-managed and untrusted SINTs.
         fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16);
 
-        /// The VTL that was running when the VP exited into VTL2, with the
-        /// exception of a successful vtl switch, where it will return the VTL
-        /// that will run on VTL 2 exit.
+        /// The VTL that was running when the VP exited into VTL2
         fn last_vtl(this: &UhProcessor<'_, Self>) -> Vtl;
 
         /// Copies shared registers (per VSM TLFS spec) from the last VTL to
@@ -865,7 +863,8 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                         );
                         self.cvm_guest_vsm = Some(GuestVsmVpState {
                             // TODO CVM GUEST VSM: Revisit during AP startup if this is correct
-                            current_vtl: Vtl::Vtl0,
+                            last_vtl: None,
+                            exit_vtl: Vtl::Vtl0,
                         })
                     }
                 }
@@ -1071,8 +1070,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     fn switch_vtl(&mut self, target_vtl: Vtl) {
         T::switch_vtl_state(self, target_vtl);
-
-        self.runner.set_exit_vtl(target_vtl);
     }
 }
 

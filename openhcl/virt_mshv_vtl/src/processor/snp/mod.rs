@@ -415,9 +415,11 @@ impl BackingPrivate for SnpBacked {
     }
 
     fn last_vtl(this: &UhProcessor<'_, Self>) -> Vtl {
-        this.cvm_guest_vsm
-            .as_ref()
-            .map_or(Vtl::Vtl0, |gvsm_state| gvsm_state.current_vtl)
+        this.cvm_guest_vsm.as_ref().map_or(Vtl::Vtl0, |gvsm_state| {
+            gvsm_state
+                .last_vtl
+                .expect("last vtl should only be called on paths where the last_vtl is valid.")
+        })
     }
 
     fn switch_vtl_state(this: &mut UhProcessor<'_, Self>, target_vtl: Vtl) {
@@ -893,30 +895,54 @@ impl UhProcessor<'_, SnpBacked> {
     }
 
     async fn run_vp_snp(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
-        let mut vmsa = self.runner.vmsa_mut(self.last_vtl());
+        // TODO CVM GUEST VSM: actually check if there is an interrupt waiting
+        // for VTL 1 and switch to it if there is
+        let next_vtl = self
+            .cvm_guest_vsm
+            .as_ref()
+            .map_or(Vtl::Vtl0, |gvsm_state| gvsm_state.exit_vtl);
+
+        let mut vmsa = self.runner.vmsa_mut(next_vtl);
         let last_interrupt_ctrl = vmsa.v_intr_cntrl();
 
         vmsa.v_intr_cntrl_mut().set_guest_busy(false);
 
-        // TODO CVM GUEST VSM actually check and run vtl 1
         self.unlock_tlb_lock(Vtl::Vtl2);
-        let tlb_halt = self.should_halt_for_tlb_unlock(Vtl::Vtl0);
+        let tlb_halt = self.should_halt_for_tlb_unlock(next_vtl);
 
-        self.runner.set_halted(
-            self.backing.lapics[Vtl::Vtl0].halted
-                || self.backing.lapics[Vtl::Vtl0].startup_suspend
-                || tlb_halt,
-        );
+        let halt = self.backing.lapics[next_vtl].halted
+            || self.backing.lapics[Vtl::Vtl0].startup_suspend // TODO GUEST VSM
+            || tlb_halt;
+
+        if halt && next_vtl == Vtl::Vtl1 {
+            tracelimit::warn_ratelimited!("halting VTL 1, which will halt the guest");
+        }
+
+        self.runner.set_halted(halt);
+
+        self.runner.set_exit_vtl(next_vtl);
 
         // Set the lazy EOI bit just before running.
-        let lazy_eoi = self.sync_lazy_eoi(Vtl::Vtl0);
+        let lazy_eoi = self.sync_lazy_eoi(next_vtl);
+
+        if let Some(gvsm_state) = self.cvm_guest_vsm.as_mut() {
+            gvsm_state.last_vtl = None;
+            gvsm_state.exit_vtl = next_vtl; // TODO GUEST VSM: update next_vtl based on interrupts
+        }
 
         let mut has_intercept = self
             .runner
             .run()
             .map_err(|err| VpHaltReason::Hypervisor(UhRunVpError::Run(err)))?;
 
-        let entered_from_vtl = self.last_vtl();
+        // If VTL 2 entered due to an intercept, fix up the last vtl
+        if let Some(gvsm_state) = self.cvm_guest_vsm.as_mut() {
+            if has_intercept {
+                gvsm_state.last_vtl = Some(next_vtl);
+            }
+        }
+
+        let entered_from_vtl = next_vtl;
         let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
 
         // TODO SNP: The guest busy bit needs to be tested and set atomically.
@@ -975,7 +1001,7 @@ impl UhProcessor<'_, SnpBacked> {
                 .lazy_eoi();
         }
 
-        let mut vmsa = self.runner.vmsa_mut(self.last_vtl());
+        let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
         let sev_error_code = SevExitCode(vmsa.guest_error_code());
 
         let stat = match sev_error_code {

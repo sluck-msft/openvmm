@@ -391,7 +391,7 @@ pub struct TdxBacked {
     lapic: LocalApic,
     #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
     eoi_exit_bitmap: [u64; 4],
-    halted: bool,
+    halted: bool, // TODO GUEST VSM: split into VTLs
     startup_suspend: bool,
     tpr_threshold: u8,
     nmi_pending: bool,
@@ -760,9 +760,11 @@ impl BackingPrivate for TdxBacked {
     }
 
     fn last_vtl(this: &UhProcessor<'_, Self>) -> Vtl {
-        this.cvm_guest_vsm
-            .as_ref()
-            .map_or(Vtl::Vtl0, |gvsm_state| gvsm_state.current_vtl)
+        this.cvm_guest_vsm.as_ref().map_or(Vtl::Vtl0, |gvsm_state| {
+            gvsm_state
+                .last_vtl
+                .expect("last vtl should only be called in places where it is valid")
+        })
     }
 
     fn switch_vtl_state(_this: &mut UhProcessor<'_, Self>, _target_vtl: Vtl) {
@@ -1137,6 +1139,8 @@ impl UhProcessor<'_, TdxBacked> {
             .runner
             .run()
             .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::Run(e)))?;
+
+        // TODO GUEST_VSM: set the last vtl
 
         *self.runner.tdx_vp_entry_flags_mut() = TdxVmFlags::new();
 

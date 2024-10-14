@@ -26,8 +26,14 @@ use zerocopy::FromZeroes;
 
 #[derive(Inspect, InspectMut)]
 pub struct GuestVsmVpState {
+    // The VTL that was running when VTL 2 received an intercept. Queried during
+    // intercept handling and only valid during intercept handling.
+    #[inspect(with = "|x| x.map(|v| u8::from(v))")]
+    pub last_vtl: Option<Vtl>,
+    // Used in VTL 2 exit code to determine which VTL to exit to, and which VTL
+    // is being entered from.
     #[inspect(with = "|x| u8::from(*x)")]
-    pub current_vtl: Vtl,
+    pub exit_vtl: Vtl,
 }
 
 impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
@@ -342,15 +348,9 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     pub fn hcvm_is_vtl_call_allowed(&self) -> bool {
         tracing::trace!("checking if vtl call is allowed");
 
-        // Only allowed from VTL 0
-        if self
-            .vp
-            .cvm_guest_vsm
-            .as_ref()
-            .expect("has guest vsm state")
-            .current_vtl
-            != Vtl::Vtl0
-        {
+        // Only allowed from VTL 0. Use the cvm_guest_vsm state directly to
+        // assert that it exists.
+        if self.vp.last_vtl() != Vtl::Vtl0 {
             false
         } else if !*self.vp.inner.vtl1_enabled.lock() {
             // VTL 1 must be enabled on the vp
@@ -368,7 +368,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             .cvm_guest_vsm
             .as_mut()
             .expect("has guest vsm state")
-            .current_vtl = Vtl::Vtl1;
+            .exit_vtl = Vtl::Vtl1;
 
         // TODO GUEST_VSM: Force reevaluation of the VTL 1 APIC in case delivery of
         // low-priority interrupts was suppressed while in VTL 0.
