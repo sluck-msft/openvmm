@@ -1188,6 +1188,10 @@ impl UhProcessor<'_, TdxBacked> {
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
         let exit_info = TdxExit(self.runner.tdx_vp_enter_exit_info());
         let next_interruption = exit_info.idt_vectoring_info();
+        let intercepted_vtl = self
+            .cvm_guest_vsm
+            .as_ref()
+            .map_or(Vtl::Vtl0, |gvsm_state| gvsm_state.current_vtl);
 
         // Acknowledge the APIC interrupt/NMI if it was delivered.
         if self.backing.interruption_information.valid()
@@ -1266,7 +1270,7 @@ impl UhProcessor<'_, TdxBacked> {
                     self.emulate(
                         dev,
                         self.backing.interruption_information.valid(),
-                        self.last_vtl(),
+                        intercepted_vtl,
                     )
                     .await?;
                 } else {
@@ -1310,7 +1314,7 @@ impl UhProcessor<'_, TdxBacked> {
                         dev,
                     })
                     .msr_read(msr)
-                    .or_else_if_unknown(|| self.read_msr(msr, self.last_vtl()))
+                    .or_else_if_unknown(|| self.read_msr(msr, intercepted_vtl))
                     .or_else_if_unknown(|| self.read_msr_cvm(msr));
 
                 let value = match result {
@@ -1357,7 +1361,7 @@ impl UhProcessor<'_, TdxBacked> {
                         dev,
                     })
                     .msr_write(msr, value)
-                    .or_else_if_unknown(|| self.write_msr(msr, value, self.last_vtl()))
+                    .or_else_if_unknown(|| self.write_msr(msr, value, intercepted_vtl))
                     .or_else_if_unknown(|| self.write_msr_cvm(msr, value));
 
                 let inject_gp = match result {
@@ -1425,7 +1429,6 @@ impl UhProcessor<'_, TdxBacked> {
                     let is_64bit = self.backing.cr0.read(&self.runner) & X64_CR0_PE != 0
                         && self.backing.efer & X64_EFER_LMA != 0;
 
-                    let intercepted_vtl = self.last_vtl();
                     let guest_memory = &self.partition.gm[intercepted_vtl];
                     let handler = UhHypercallHandler {
                         vp: &mut *self,
@@ -1536,7 +1539,7 @@ impl UhProcessor<'_, TdxBacked> {
                 // protected, but we don't yet support MNF/guest VSM so this is
                 // okay enough.
                 let is_readable_ram =
-                    self.partition.gm[self.last_vtl()].check_gpa_readable(exit_info.gpa());
+                    self.partition.gm[intercepted_vtl].check_gpa_readable(exit_info.gpa());
                 if is_readable_ram {
                     tracelimit::warn_ratelimited!(
                         gpa = exit_info.gpa(),
@@ -1567,7 +1570,7 @@ impl UhProcessor<'_, TdxBacked> {
                     self.emulate(
                         dev,
                         self.backing.interruption_information.valid(),
-                        self.last_vtl(),
+                        intercepted_vtl,
                     )
                     .await?;
                 }
@@ -1624,7 +1627,7 @@ impl UhProcessor<'_, TdxBacked> {
         // Breakpoint exceptions may return a non-fatal error.
         // We dispatch here to correctly increment the counter.
         if cfg!(feature = "gdb") && breakpoint_debug_exception {
-            self.handle_debug_exception()?;
+            self.handle_debug_exception(self.last_vtl())?;
         }
 
         Ok(())
@@ -1646,6 +1649,10 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     fn handle_tdvmcall(&mut self, dev: &impl CpuIo) {
+        let intercepted_vtl = self
+            .cvm_guest_vsm
+            .as_ref()
+            .map_or(Vtl::Vtl0, |gvsm_state| gvsm_state.current_vtl);
         let regs = self.runner.tdx_enter_guest_state();
         if regs.r10() == 0 {
             // Architectural VMCALL.
@@ -1702,12 +1709,11 @@ impl UhProcessor<'_, TdxBacked> {
             // guests will issue hypercalls without the boundary bit set,
             // whereas UEFI will issue with the bit set.
             let guest_memory = &self.partition.untrusted_dma_memory;
-            let last_vtl = self.last_vtl();
             let handler = UhHypercallHandler {
                 vp: &mut *self,
                 bus: dev,
                 trusted: false,
-                intercepted_vtl: last_vtl,
+                intercepted_vtl,
             };
 
             UhHypercallHandler::TDCALL_DISPATCHER.dispatch(guest_memory, TdHypercall(handler));
@@ -1715,10 +1721,13 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     fn read_tdvmcall_msr(&mut self, msr: u32) -> Result<u64, MsrError> {
-        let last_vtl = self.last_vtl();
+        let intercepted_vtl = self
+            .cvm_guest_vsm
+            .as_ref()
+            .map_or(Vtl::Vtl0, |gvsm_state| gvsm_state.current_vtl);
         match msr {
             msr @ (hvdef::HV_X64_MSR_GUEST_OS_ID | hvdef::HV_X64_MSR_VP_INDEX) => {
-                self.hv(last_vtl).unwrap().msr_read(msr)
+                self.hv(intercepted_vtl).unwrap().msr_read(msr)
             }
             _ => self
                 .untrusted_synic
@@ -1729,9 +1738,13 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     fn write_tdvmcall_msr(&mut self, msr: u32, value: u64) -> Result<(), MsrError> {
+        let intercepted_vtl = self
+            .cvm_guest_vsm
+            .as_ref()
+            .map_or(Vtl::Vtl0, |gvsm_state| gvsm_state.current_vtl);
         match msr {
             msr @ hvdef::HV_X64_MSR_GUEST_OS_ID => self
-                .hv_mut(self.last_vtl())
+                .hv_mut(intercepted_vtl)
                 .unwrap()
                 .msr_write(msr, value)?,
             _ => {
