@@ -539,6 +539,7 @@ impl HvTranslateGvaSupport for UhProcessor<'_, SnpBacked> {
             efer: vmsa.efer(),
             cr3: vmsa.cr3(),
             rflags: vmsa.rflags(),
+            pat: Some(vmsa.pat()),
             ss: from_seg(hv_seg_from_snp(&vmsa.ss())),
             encryption_mode: virt::x86::translate::EncryptionMode::Vtom(
                 self.partition.caps.vtom.unwrap(),

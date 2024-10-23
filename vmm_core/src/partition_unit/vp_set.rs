@@ -1189,6 +1189,7 @@ mod vp_state {
             efer: state.efer,
             cr3: state.cr3,
             rflags: state.rflags,
+            pat: None,
             ss: state.ss.into(),
             // For debug translation, don't worry about accidentally reading
             // page tables from shared memory.
@@ -1203,7 +1204,7 @@ mod vp_state {
             privilege_check: virt::x86::translate::TranslatePrivilegeCheck::None,
             set_page_table_bits: false,
         };
-        Ok(translate_gva_to_gpa(guest_memory, gva, &registers, flags)?)
+        Ok(translate_gva_to_gpa(guest_memory, gva, &registers, flags)?.gpa)
     }
 
     pub(super) fn read_virtual_memory(

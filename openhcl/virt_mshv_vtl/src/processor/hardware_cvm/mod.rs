@@ -579,7 +579,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     }
 
     pub fn hcvm_vtl_call(&mut self) {
-        tracing::trace!("handling vtl call");
+        tracing::debug!("handling vtl call");
 
         self.vp.switch_vtl(self.intercepted_vtl, GuestVtl::Vtl1);
         self.vp.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl1;
@@ -606,7 +606,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     }
 
     pub fn hcvm_vtl_return(&mut self, fast_return: bool) {
-        tracing::trace!("handling vtl return");
+        tracing::debug!("handling vtl return");
 
         self.vp.unlock_tlb_lock(Vtl::Vtl1);
 
@@ -642,34 +642,33 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         gva: u64,
         flags: hvdef::hypercall::TranslateGvaControlFlagsX64,
     ) -> HvResult<hvdef::hypercall::TranslateVirtualAddressOutput> {
-        // TODO: what about all the other control flags? Definitely need to be able to target a vtl
+        // TODO: vtl access check?
 
         if flags.tlb_flush_inhibit() {
-            // TODO: This probably isn't the right VTL
             support.acquire_tlb_lock(target_vtl);
         }
 
-        // TODO: what about all the other control flags? Definitely need to be able to target a vtl
-
-        // TODO: these probably aren't the right registers
         let registers = support
             .registers(target_vtl)
             .map_err(|_| HvError::AccessDenied)
             .unwrap(); // TODO: fix this
 
-        // TODO: this isn't the right memory object
+        // TODO: is this the only page table walk function or is there another one
         match virt::x86::translate::translate_gva_to_gpa(
             support.guest_memory(target_vtl),
             gva,
             &registers,
             virt::x86::translate::TranslateFlags::from_hv_flags(flags),
         ) {
-            Ok(gpa) => Ok(hvdef::hypercall::TranslateVirtualAddressOutput {
-                translation_result: hvdef::hypercall::TranslateGvaResult::new()
-                    .with_result_code(TranslateGvaResultCode::SUCCESS.0)
-                    .with_overlay_page(gpa == support.overlay_page(target_vtl)), // TODO fill out the rest
-                gpa_page: gpa / hvdef::HV_PAGE_SIZE,
-            }),
+            Ok(virt::x86::translate::TranslateResult { gpa, cache_type }) => {
+                Ok(hvdef::hypercall::TranslateVirtualAddressOutput {
+                    translation_result: hvdef::hypercall::TranslateGvaResult::new()
+                        .with_result_code(TranslateGvaResultCode::SUCCESS.0)
+                        .with_overlay_page(gpa == support.overlay_page(target_vtl))
+                        .with_cache_type(hvdef::HvCacheType::from(cache_type.unwrap()).0 as u8),
+                    gpa_page: gpa / hvdef::HV_PAGE_SIZE,
+                })
+            }
             Err(err) => Ok(hvdef::hypercall::TranslateVirtualAddressOutput {
                 translation_result: hvdef::hypercall::TranslateGvaResult::new()
                     .with_result_code(TranslateGvaResultCode::from(err).0), // TODO fill out the rest
