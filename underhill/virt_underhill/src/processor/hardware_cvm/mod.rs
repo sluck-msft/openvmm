@@ -641,22 +641,18 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         gva: u64,
         flags: hvdef::hypercall::TranslateGvaControlFlagsX64,
     ) -> HvResult<hvdef::hypercall::TranslateVirtualAddressOutput> {
-        // TODO: what about all the other control flags? Definitely need to be able to target a vtl
+        // TODO: vtl access check?
 
         if flags.tlb_flush_inhibit() {
-            // TODO: This probably isn't the right VTL
             support.acquire_tlb_lock(target_vtl);
         }
 
-        // TODO: what about all the other control flags? Definitely need to be able to target a vtl
-
-        // TODO: these probably aren't the right registers
         let registers = support
             .registers(target_vtl)
             .map_err(|_| HvError::AccessDenied)
             .unwrap(); // TODO: fix this
 
-        // TODO: this isn't the right memory object
+        // TODO: is this the only page table walk function or is there another one
         match virt::x86::translate::translate_gva_to_gpa(
             support.guest_memory(target_vtl),
             gva,

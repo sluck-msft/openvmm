@@ -114,6 +114,13 @@ impl TranslateFlags {
     }
 }
 
+/// Result of translation
+pub struct TranslateResult {
+    /// The translated GPA.
+    pub gpa: u64,
+    pub cache_type: u8, // TODO
+}
+
 /// Translation error.
 #[derive(Debug, Error)]
 pub enum Error {
