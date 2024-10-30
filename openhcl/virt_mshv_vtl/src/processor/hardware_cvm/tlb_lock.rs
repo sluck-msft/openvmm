@@ -174,4 +174,8 @@ impl<'a, B: HardwareIsolatedBacking> UhProcessor<'a, B> {
 
         false
     }
+
+    pub fn is_tlb_locked(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl) -> bool {
+        self.vtls_tlb_locked.get(requesting_vtl, target_vtl)
+    }
 }

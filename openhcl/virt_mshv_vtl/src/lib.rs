@@ -363,6 +363,13 @@ impl GuestVsmVtl1StateInner {
             _ => None,
         }
     }
+
+    fn get_hardware_cvm(&self) -> Option<&HardwareCvmVtl1State> {
+        match self {
+            GuestVsmVtl1StateInner::HardwareCvm { state } => Some(state),
+            _ => None,
+        }
+    }
 }
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
