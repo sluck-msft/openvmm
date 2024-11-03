@@ -508,6 +508,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             HvX64RegisterName::Efer
             | HvX64RegisterName::Cr0
             | HvX64RegisterName::Cr4
+            | HvX64RegisterName::Cr8
             | HvX64RegisterName::Ldtr
             | HvX64RegisterName::Gdtr
             | HvX64RegisterName::Idtr
@@ -519,6 +520,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                     HvX64RegisterName::Efer => registers.efer = reg.value.as_u64(),
                     HvX64RegisterName::Cr0 => registers.cr0 = reg.value.as_u64(),
                     HvX64RegisterName::Cr4 => registers.cr4 = reg.value.as_u64(),
+                    HvX64RegisterName::Cr8 => registers.cr8 = reg.value.as_u64(),
                     HvX64RegisterName::Ldtr => {
                         registers.ldtr = hvdef::HvX64SegmentRegister::from(reg.value).into()
                     }
