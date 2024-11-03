@@ -546,12 +546,19 @@ struct UhVpInner {
     hcvm_vtl1_enabled: Mutex<bool>,
     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     #[inspect(with = "|arr| inspect::iter_by_index(arr.iter().map(|v| v.lock().is_some()))")]
-    hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<hvdef::hypercall::InitialVpContextX64>>>, 2>,
+    hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<StartEnableVtlVp>>>, 2>,
     sidecar_exit_reason: Mutex<Option<SidecarExitReason>>,
     // TODO: move the below into some per-backing state, as it's only used on HCVM,
     // but needs to be accessed by other VPs.
     /// The current status of TLB locks.
     tlb_lock_info: VtlArray<TlbLockInfo, 2>,
+}
+
+#[derive(Debug, Inspect)]
+pub struct StartEnableVtlVp {
+    is_start: bool,
+    #[inspect(skip)] // TODO
+    context: hvdef::hypercall::InitialVpContextX64,
 }
 
 #[derive(Debug, Inspect)]

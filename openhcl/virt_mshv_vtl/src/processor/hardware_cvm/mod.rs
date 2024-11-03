@@ -13,6 +13,7 @@ use crate::GuestVsmVtl1State;
 use crate::GuestVsmVtl1StateInner;
 use crate::GuestVtl;
 use crate::HardwareIsolatedBacking;
+use crate::StartEnableVtlVp;
 use crate::WakeReason;
 use hvdef::hypercall::HvFlushFlags;
 use hvdef::hypercall::TranslateGvaResultCode;
@@ -113,118 +114,6 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         tracing::debug!("Successfully granted vtl 1 access to lower vtl memory");
 
         tracing::info!("Enabled vtl 1 on the partition");
-
-        Ok(())
-    }
-
-    pub fn hcvm_enable_vp_vtl(
-        &mut self,
-        partition_id: u64,
-        vp_index: u32,
-        vtl: Vtl,
-        vp_context: &hvdef::hypercall::InitialVpContextX64,
-    ) -> HvResult<()> {
-        if partition_id != hvdef::HV_PARTITION_ID_SELF {
-            return Err(HvError::InvalidPartitionId);
-        }
-
-        if vp_index as usize >= self.vp.partition.vps.len() {
-            return Err(HvError::InvalidVpIndex);
-        }
-
-        let vtl = GuestVtl::try_from(vtl).map_err(|_| HvError::InvalidParameter)?;
-        if vtl != GuestVtl::Vtl1 {
-            return Err(HvError::InvalidParameter);
-        }
-
-        // If handling on behalf of VTL 0, then lock to make sure that no other
-        // VP makes this call on behalf of VTL 0.
-        let gvsm_state = {
-            let mut gvsm_state = self.vp.partition.guest_vsm.write();
-
-            // Should be enabled on the partition
-            let vtl1_state = gvsm_state.get_vtl1_mut().ok_or(HvError::InvalidVtlState)?;
-            let vtl1_state_inner = vtl1_state.inner.get_hardware_cvm_mut().unwrap();
-
-            let current_vp_index = self.vp.vp_index().index();
-
-            // A higher VTL can only be enabled on the current processor to make
-            // sure that the lower VTL is executing at a known point, and only if
-            // the higher VTL has not been enabled on any other VP because at that
-            // point, the higher VTL should be orchestrating its own enablement.
-            //
-            // TODO GUEST_VSM: last_vtl currently always returns 0 (which is wrong),
-            // so for any VP outside of the BSP, this will fail
-            if self.intercepted_vtl < GuestVtl::Vtl1 {
-                if vtl1_state_inner.enabled_on_vp_count > 0 || vp_index != current_vp_index {
-                    return Err(HvError::AccessDenied);
-                }
-
-                Some(gvsm_state)
-            } else {
-                // If handling on behalf of VTL 1, then some other VP (i.e. the
-                // bsp) must have already handled EnableVpVtl. No partition-wide
-                // state is changing, so no need to hold the lock
-                assert!(vtl1_state_inner.enabled_on_vp_count > 0);
-                None
-            }
-        };
-
-        // Lock the remote vp state to make sure no other VP is trying to enable
-        // VTL 1 on it.
-        let target_vp = &self.vp.partition.vps[vp_index as usize];
-        let mut vtl1_enabled = target_vp.hcvm_vtl1_enabled.lock();
-
-        if *vtl1_enabled {
-            return Err(HvError::VtlAlreadyEnabled);
-        }
-
-        // TODO GUEST_VSM: construct APIC (including overlays, vp assist page) for VTL 1
-
-        // Register the VMSA with the hypervisor
-        let hv_vp_context = match self.vp.partition.isolation {
-            virt::IsolationType::None | virt::IsolationType::Vbs => unreachable!(),
-            virt::IsolationType::Snp => {
-                // For VTL 1, user mode needs to explicitly register the VMSA
-                // with the hypervisor via the EnableVpVtl hypercall.
-                let vmsa_pfn = self.vp.partition.hcl.vtl1_vmsa_pfn(vp_index);
-                let sev_control = hvdef::HvX64RegisterSevControl::new()
-                    .with_enable_encrypted_state(true)
-                    .with_vmsa_gpa_page_number(vmsa_pfn);
-
-                let mut hv_vp_context = hvdef::hypercall::InitialVpContextX64::new_zeroed();
-                hv_vp_context.rip = sev_control.into();
-
-                hv_vp_context
-            }
-            virt::IsolationType::Tdx => {
-                // TODO GUEST VSM
-                hvdef::hypercall::InitialVpContextX64::new_zeroed()
-            }
-        };
-
-        self.vp
-            .partition
-            .hcl
-            .enable_vp_vtl(vp_index, vtl, hv_vp_context)?;
-
-        // Cannot fail from here
-        if let Some(mut gvsm) = gvsm_state {
-            gvsm.get_vtl1_mut()
-                .unwrap()
-                .inner
-                .get_hardware_cvm_mut()
-                .unwrap()
-                .enabled_on_vp_count += 1;
-        }
-
-        *vtl1_enabled = true;
-
-        let target_vp = &self.vp.partition.vps[vp_index as usize];
-        *target_vp.hv_start_enable_vtl_vp[vtl].lock() = Some(Box::new(*vp_context));
-        target_vp.wake(vtl, WakeReason::HV_START_ENABLE_VP_VTL);
-
-        tracing::debug!("enabled vtl 1 on vp {}", vp_index);
 
         Ok(())
     }
@@ -750,6 +639,129 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         hv_result.or(virtual_result)
     }
 }
+
+impl<T, B: HardwareIsolatedBacking>
+    hv1_hypercall::EnableVpVtl<hvdef::hypercall::InitialVpContextX64>
+    for UhHypercallHandler<'_, '_, T, B>
+{
+    fn enable_vp_vtl(
+        &mut self,
+        partition_id: u64,
+        vp_index: u32,
+        vtl: Vtl,
+        vp_context: &hvdef::hypercall::InitialVpContextX64,
+    ) -> HvResult<()> {
+        if partition_id != hvdef::HV_PARTITION_ID_SELF {
+            return Err(HvError::InvalidPartitionId);
+        }
+
+        if vp_index as usize >= self.vp.partition.vps.len() {
+            return Err(HvError::InvalidVpIndex);
+        }
+
+        let vtl = GuestVtl::try_from(vtl).map_err(|_| HvError::InvalidParameter)?;
+        if vtl != GuestVtl::Vtl1 {
+            return Err(HvError::InvalidParameter);
+        }
+
+        // If handling on behalf of VTL 0, then lock to make sure that no other
+        // VP makes this call on behalf of VTL 0.
+        let gvsm_state = {
+            let mut gvsm_state = self.vp.partition.guest_vsm.write();
+
+            // Should be enabled on the partition
+            let vtl1_state = gvsm_state.get_vtl1_mut().ok_or(HvError::InvalidVtlState)?;
+            let vtl1_state_inner = vtl1_state.inner.get_hardware_cvm_mut().unwrap();
+
+            let current_vp_index = self.vp.vp_index().index();
+
+            // A higher VTL can only be enabled on the current processor to make
+            // sure that the lower VTL is executing at a known point, and only if
+            // the higher VTL has not been enabled on any other VP because at that
+            // point, the higher VTL should be orchestrating its own enablement.
+            //
+            // TODO GUEST_VSM: last_vtl currently always returns 0 (which is wrong),
+            // so for any VP outside of the BSP, this will fail
+            if self.intercepted_vtl < GuestVtl::Vtl1 {
+                if vtl1_state_inner.enabled_on_vp_count > 0 || vp_index != current_vp_index {
+                    return Err(HvError::AccessDenied);
+                }
+
+                Some(gvsm_state)
+            } else {
+                // If handling on behalf of VTL 1, then some other VP (i.e. the
+                // bsp) must have already handled EnableVpVtl. No partition-wide
+                // state is changing, so no need to hold the lock
+                assert!(vtl1_state_inner.enabled_on_vp_count > 0);
+                None
+            }
+        };
+
+        // Lock the remote vp state to make sure no other VP is trying to enable
+        // VTL 1 on it.
+        let target_vp = &self.vp.partition.vps[vp_index as usize];
+        let mut vtl1_enabled = target_vp.hcvm_vtl1_enabled.lock();
+
+        if *vtl1_enabled {
+            return Err(HvError::VtlAlreadyEnabled);
+        }
+
+        // TODO GUEST_VSM: construct APIC (including overlays, vp assist page) for VTL 1
+
+        // Register the VMSA with the hypervisor
+        let hv_vp_context = match self.vp.partition.isolation {
+            virt::IsolationType::None | virt::IsolationType::Vbs => unreachable!(),
+            virt::IsolationType::Snp => {
+                // For VTL 1, user mode needs to explicitly register the VMSA
+                // with the hypervisor via the EnableVpVtl hypercall.
+                let vmsa_pfn = self.vp.partition.hcl.vtl1_vmsa_pfn(vp_index);
+                let sev_control = hvdef::HvX64RegisterSevControl::new()
+                    .with_enable_encrypted_state(true)
+                    .with_vmsa_gpa_page_number(vmsa_pfn);
+
+                let mut hv_vp_context = hvdef::hypercall::InitialVpContextX64::new_zeroed();
+                hv_vp_context.rip = sev_control.into();
+
+                hv_vp_context
+            }
+            virt::IsolationType::Tdx => {
+                // TODO GUEST VSM
+                hvdef::hypercall::InitialVpContextX64::new_zeroed()
+            }
+        };
+
+        self.vp
+            .partition
+            .hcl
+            .enable_vp_vtl(vp_index, vtl, hv_vp_context)?;
+
+        // Cannot fail from here
+        if let Some(mut gvsm) = gvsm_state {
+            gvsm.get_vtl1_mut()
+                .unwrap()
+                .inner
+                .get_hardware_cvm_mut()
+                .unwrap()
+                .enabled_on_vp_count += 1;
+        }
+
+        *vtl1_enabled = true;
+
+        let enable_vp_vtl_state = StartEnableVtlVp {
+            is_start: false,
+            context: *vp_context,
+        };
+
+        let target_vp = &self.vp.partition.vps[vp_index as usize];
+        *target_vp.hv_start_enable_vtl_vp[vtl].lock() = Some(Box::new(enable_vp_vtl_state));
+        target_vp.wake(vtl, WakeReason::HV_START_ENABLE_VP_VTL);
+
+        tracing::debug!("enabled vtl 1 on vp {}", vp_index);
+
+        Ok(())
+    }
+}
+
 impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters
     for UhHypercallHandler<'_, '_, T, B>
 {
