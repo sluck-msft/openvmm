@@ -460,6 +460,10 @@ impl BackingPrivate for SnpBacked {
         })
     }
 
+    fn set_exit_vtl(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) {
+        this.backing.cvm_state_mut().exit_vtl = vtl;
+    }
+
     fn inspect_extra(this: &mut UhProcessor<'_, Self>, resp: &mut inspect::Response<'_>) {
         let vtl0_vmsa = this.runner.vmsa(GuestVtl::Vtl0);
         let vtl1_vmsa = if *this.cvm_vp_inner().vtl1_enabled.lock() {
@@ -658,6 +662,7 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
             hv1_hypercall::HvSetVpRegisters,
             hv1_hypercall::HvModifyVtlProtectionMask,
             hv1_hypercall::HvX64TranslateVirtualAddress,
+            hv1_hypercall::HvX64StartVirtualProcessor,
         ],
     );
 
@@ -2210,6 +2215,25 @@ impl<T: CpuIo> hv1_hypercall::EnableVpVtl<hvdef::hypercall::InitialVpContextX64>
         vp_context: &hvdef::hypercall::InitialVpContextX64,
     ) -> hvdef::HvResult<()> {
         self.hcvm_enable_vp_vtl(partition_id, vp_index, vtl, vp_context)
+    }
+}
+
+impl<T: CpuIo> hv1_hypercall::RetargetDeviceInterrupt for UhHypercallHandler<'_, '_, T, SnpBacked> {
+    fn retarget_interrupt(
+        &mut self,
+        device_id: u64,
+        address: u64,
+        data: u32,
+        params: &hv1_hypercall::HvInterruptParameters<'_>,
+    ) -> hvdef::HvResult<()> {
+        self.hcvm_retarget_interrupt(
+            device_id,
+            address,
+            data,
+            params.vector,
+            params.multicast,
+            params.target_processors,
+        )
     }
 }
 

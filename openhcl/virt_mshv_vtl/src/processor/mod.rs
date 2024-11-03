@@ -240,6 +240,11 @@ mod private {
         /// This is used for hypervisor-managed and untrusted SINTs.
         fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16);
 
+        // TODO: try not to put this here
+        fn set_exit_vtl(_this: &mut UhProcessor<'_, Self>, _vtl: GuestVtl) {
+            unimplemented!("set_exit_vtl not implemented");
+        }
+
         /// Checks interrupt status for all VTLs, and handles cross VTL interrupt preemption and VINA.
         /// Returns whether interrupt reprocessing is required.
         fn handle_cross_vtl_interrupts(
