@@ -50,6 +50,7 @@ mod mapping {
     use thiserror::Error;
     use virt::IsolationType;
     use virt_mshv_vtl::ProtectIsolatedMemory;
+    use virt_mshv_vtl::SetVtl1ProtectionsError;
     use vm_topology::memory::MemoryLayout;
     use vtl_array::VtlArray;
     use x86defs::snp::SevRmpAdjust;
@@ -1194,6 +1195,30 @@ mod mapping {
             *overlay = None;
 
             // TODO CVM GUEST VSM: flush TLB
+        }
+
+        fn set_vtl1_protections(
+            &self,
+            default_protections: HvMapGpaFlags,
+        ) -> Result<(), SetVtl1ProtectionsError> {
+            let mut inner = self.inner.lock();
+
+            // Don't allow changing existing protections once vtl protection is enabled
+            if self.default_vtl0_protections() != default_protections {
+                if self.vtl1_protections_enabled() {
+                    return Err(SetVtl1ProtectionsError::ExistingDefaultProtections);
+                }
+
+                let targeted_vtl = GuestVtl::Vtl0;
+                self.change_default_vtl_protections(targeted_vtl, default_protections)
+                    .map_err(SetVtl1ProtectionsError::ApplyDefaultProtections)?;
+
+                // TODO GUEST VSM: actually use the enable_vtl_protection value
+                // when deciding whether to check vtl access();
+                inner.vtl1_protections_enabled = true;
+            }
+
+            Ok(())
         }
 
         fn set_vtl1_protections_enabled(&self) {

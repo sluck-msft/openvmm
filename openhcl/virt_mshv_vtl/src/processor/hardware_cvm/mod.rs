@@ -10,8 +10,8 @@ use crate::processor::HardwareIsolatedBacking;
 use crate::processor::UhHypercallHandler;
 use crate::validate_vtl_gpa_flags;
 use crate::GuestVsmState;
-use crate::GuestVsmVtl1State;
 use crate::GuestVtl;
+use crate::SetVtl1ProtectionsError;
 use crate::WakeReason;
 use hvdef::hypercall::HvFlushFlags;
 use hvdef::HvError;
@@ -52,7 +52,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         match *gvsm_state {
             GuestVsmState::NotPlatformSupported => return Err(HvError::AccessDenied),
             GuestVsmState::NotGuestEnabled => (),
-            GuestVsmState::Enabled { vtl1: _ } => {
+            GuestVsmState::Enabled => {
                 // VTL 1 cannot be already enabled
                 return Err(HvError::VtlAlreadyEnabled);
             }
@@ -65,14 +65,14 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             0.into(),
         )?;
 
-        *gvsm_state = GuestVsmState::Enabled {
-            vtl1: GuestVsmVtl1State::HardwareCvm {
-                state: crate::HardwareCvmVtl1State {
-                    mbec_enabled: flags.enable_mbec(),
-                    ..Default::default()
-                },
-            },
-        };
+        *gvsm_state = GuestVsmState::Enabled;
+
+        self.vp
+            .backing
+            .cvm_partition_state()
+            .guest_vsm_vtl1_state
+            .write()
+            .mbec_enabled = flags.enable_mbec();
 
         let protector = self
             .vp
@@ -113,15 +113,20 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             return Err(HvError::InvalidParameter);
         }
 
+        // VTL 1 Should be enabled on the partition
+        if !matches!(*self.vp.partition.guest_vsm.read(), GuestVsmState::Enabled) {
+            return Err(HvError::InvalidVtlState);
+        }
+
         // If handling on behalf of VTL 0, then lock to make sure that no other
         // VP makes this call on behalf of VTL 0.
         let gvsm_state = {
-            let mut gvsm_state = self.vp.partition.guest_vsm.write();
-
-            // Should be enabled on the partition
-            let vtl1_state = gvsm_state
-                .get_hardware_cvm_mut()
-                .ok_or(HvError::InvalidVtlState)?;
+            let mut gvsm_state = self
+                .vp
+                .backing
+                .cvm_partition_state()
+                .guest_vsm_vtl1_state
+                .write();
 
             let current_vp_index = self.vp.vp_index().index();
 
@@ -133,7 +138,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             // TODO GUEST_VSM: last_vtl currently always returns 0 (which is wrong),
             // so for any VP outside of the BSP, this will fail
             if self.intercepted_vtl < GuestVtl::Vtl1 {
-                if vtl1_state.enabled_on_vp_count > 0 || vp_index != current_vp_index {
+                if gvsm_state.enabled_on_vp_count > 0 || vp_index != current_vp_index {
                     return Err(HvError::AccessDenied);
                 }
 
@@ -142,7 +147,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 // If handling on behalf of VTL 1, then some other VP (i.e. the
                 // bsp) must have already handled EnableVpVtl. No partition-wide
                 // state is changing, so no need to hold the lock
-                assert!(vtl1_state.enabled_on_vp_count > 0);
+                assert!(gvsm_state.enabled_on_vp_count > 0);
                 None
             }
         };
@@ -187,7 +192,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
 
         // Cannot fail from here
         if let Some(mut gvsm) = gvsm_state {
-            gvsm.get_hardware_cvm_mut().unwrap().enabled_on_vp_count += 1;
+            gvsm.enabled_on_vp_count += 1;
         }
 
         *vtl1_enabled = true;
@@ -492,10 +497,16 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::ModifyVtlProtectionMask
         }
 
         // VTL 1 mut be enabled already.
-        let mut guest_vsm_lock = self.vp.partition.guest_vsm.write();
-        let guest_vsm = guest_vsm_lock
-            .get_hardware_cvm_mut()
-            .ok_or((HvError::InvalidVtlState, 0))?;
+        if !matches!(*self.vp.partition.guest_vsm.read(), GuestVsmState::Enabled) {
+            return Err((HvError::InvalidVtlState, 0));
+        }
+
+        let guest_vsm = self
+            .vp
+            .backing
+            .cvm_partition_state()
+            .guest_vsm_vtl1_state
+            .read();
 
         if !validate_vtl_gpa_flags(
             map_flags,
@@ -540,22 +551,22 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         }
 
         // VTL 1 mut be enabled already.
-        let mut guest_vsm_lock = self.partition.guest_vsm.write();
-        let guest_vsm = guest_vsm_lock
-            .get_hardware_cvm_mut()
-            .ok_or(HvError::InvalidVtlState)?;
+        if !matches!(*self.partition.guest_vsm.read(), GuestVsmState::Enabled) {
+            return Err(HvError::InvalidVtlState);
+        }
 
         let protections = HvMapGpaFlags::from(value.default_vtl_protection_mask() as u32);
 
-        let protector = self
-            .partition
-            .isolated_memory_protector
-            .as_ref()
-            .expect("isolated memory protector must exist for a CVM");
-        // VTL protection cannot be disabled once enabled.
-        if !value.enable_vtl_protection() && protector.vtl1_protections_enabled() {
+        // Default VTL protection mask must include read and write.
+        if !(protections.readable() && protections.writable()) {
             return Err(HvError::InvalidRegisterValue);
         }
+
+        let mut guest_vsm = self
+            .backing
+            .cvm_partition_state()
+            .guest_vsm_vtl1_state
+            .write();
 
         if !validate_vtl_gpa_flags(
             protections,
@@ -565,28 +576,20 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             return Err(HvError::InvalidRegisterValue);
         }
 
-        // Default VTL protection mask must include read and write.
-        if !(protections.readable() && protections.writable()) {
-            return Err(HvError::InvalidRegisterValue);
-        }
+        let protector = self
+            .partition
+            .isolated_memory_protector
+            .as_ref()
+            .expect("isolated memory protector must exist for a CVM");
 
-        // Protections given to set_vsm_partition_config actually apply to VTLs lower
-        // than the VTL specified as an argument for hardware CVMs.
-        let targeted_vtl = GuestVtl::Vtl0;
-
-        // Don't allow changing existing protections once vtl protection is enabled
-        if protector.vtl1_protections_enabled() {
-            let current_protections = protector.default_vtl0_protections();
-            if protections != current_protections {
-                return Err(HvError::InvalidRegisterValue);
-            }
-        }
-
-        protector.change_default_vtl_protections(targeted_vtl, protections)?;
-
-        // TODO GUEST VSM: actually use the enable_vtl_protection value when
-        // deciding whether to check vtl access();
-        protector.set_vtl1_protections_enabled();
+        protector
+            .set_vtl1_protections(protections)
+            .map_err(|e| match e {
+                SetVtl1ProtectionsError::ExistingDefaultProtections => {
+                    HvError::InvalidRegisterValue
+                }
+                SetVtl1ProtectionsError::ApplyDefaultProtections(hv_error) => hv_error,
+            })?;
 
         // Note: Zero memory on reset will happen regardless of this value,
         // since reset that involves resetting from UEFI isn't supported, and

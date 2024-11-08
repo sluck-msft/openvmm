@@ -22,6 +22,7 @@ cfg_if::cfg_if!(
         use hv1_emulator::hv::ProcessorVtlHv;
         use processor::snp::SnpBackedShared;
         use processor::tdx::TdxBackedShared;
+        use processor::mshv::x64::HypervisorBackedX86Shared;
         use std::arch::x86_64::CpuidResult;
         use virt::CpuidLeaf;
     } else if #[cfg(target_arch = "aarch64")] { // xtask-fmt allow-target-arch sys-crate
@@ -224,7 +225,10 @@ struct UhPartitionInner {
 #[derive(Clone, Inspect)]
 #[inspect(external_tag)]
 enum BackingShared {
-    // No shared state for hypervisor-backed VMs today.
+    #[cfg(guest_arch = "x86_64")]
+    Hypervisor(#[inspect(flatten)] Arc<HypervisorBackedX86Shared>),
+    // No shared state for arm hypervisor-backed VMs today.
+    #[cfg(guest_arch = "aarch64")]
     Hypervisor,
     #[cfg(guest_arch = "x86_64")]
     Snp(#[inspect(flatten)] Arc<SnpBackedShared>),
@@ -244,7 +248,14 @@ impl BackingShared {
                 else {
                     unreachable!()
                 };
-                BackingShared::Hypervisor
+                #[cfg(guest_arch = "x86_64")]
+                let backing_shared =
+                    BackingShared::Hypervisor(Arc::new(HypervisorBackedX86Shared::new()));
+
+                #[cfg(guest_arch = "aarch64")]
+                let backing_shared = BackingShared::Hypervisor;
+
+                backing_shared
             }
             #[cfg(guest_arch = "x86_64")]
             IsolationType::Snp => {
@@ -342,6 +353,7 @@ pub struct UhCvmPartitionState {
         with = "|vec| inspect::iter_by_index(vec.iter().map(|arr| inspect::iter_by_index(arr.iter())))"
     )]
     tlb_lock_info: Vec<VtlArray<TlbLockInfo, 2>>,
+    guest_vsm_vtl1_state: RwLock<HardwareCvmVtl1State>,
 }
 
 /// Partition-wide state for CVMs.
@@ -356,55 +368,55 @@ pub enum UhCvmPartitionState {}
 enum GuestVsmState {
     NotPlatformSupported,
     NotGuestEnabled,
-    Enabled { vtl1: GuestVsmVtl1State },
+    Enabled, // { vtl1: GuestVsmVtl1State },
 }
 
-impl GuestVsmState {
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
-    fn get_vbs_isolated(&self) -> Option<&VbsIsolatedVtl1State> {
-        match self {
-            GuestVsmState::Enabled {
-                vtl1: GuestVsmVtl1State::VbsIsolated { state },
-            } => Some(state),
+// impl GuestVsmState {
+//     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+//     fn get_vbs_isolated(&self) -> Option<&VbsIsolatedVtl1State> {
+//         match self {
+//             GuestVsmState::Enabled {
+//                 vtl1: GuestVsmVtl1State::VbsIsolated { state },
+//             } => Some(state),
 
-            _ => None,
-        }
-    }
+//             _ => None,
+//         }
+//     }
 
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
-    fn get_vbs_isolated_mut(&mut self) -> Option<&mut VbsIsolatedVtl1State> {
-        match self {
-            GuestVsmState::Enabled {
-                vtl1: GuestVsmVtl1State::VbsIsolated { state },
-            } => Some(state),
+//     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+//     fn get_vbs_isolated_mut(&mut self) -> Option<&mut VbsIsolatedVtl1State> {
+//         match self {
+//             GuestVsmState::Enabled {
+//                 vtl1: GuestVsmVtl1State::VbsIsolated { state },
+//             } => Some(state),
 
-            _ => None,
-        }
-    }
+//             _ => None,
+//         }
+//     }
 
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
-    fn get_hardware_cvm_mut(&mut self) -> Option<&mut HardwareCvmVtl1State> {
-        match self {
-            GuestVsmState::Enabled {
-                vtl1: GuestVsmVtl1State::HardwareCvm { state },
-            } => Some(state),
+//     #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+//     fn get_hardware_cvm_mut(&mut self) -> Option<&mut HardwareCvmVtl1State> {
+//         match self {
+//             GuestVsmState::Enabled {
+//                 vtl1: GuestVsmVtl1State::HardwareCvm { state },
+//             } => Some(state),
 
-            _ => None,
-        }
-    }
-}
+//             _ => None,
+//         }
+//     }
+// }
 
-#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
-#[derive(Clone, Copy, Inspect)]
-#[inspect(external_tag)]
-enum GuestVsmVtl1State {
-    HardwareCvm { state: HardwareCvmVtl1State },
-    VbsIsolated { state: VbsIsolatedVtl1State },
-}
+// #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+// #[derive(Clone, Copy, Inspect)]
+// #[inspect(external_tag)]
+// enum GuestVsmVtl1State {
+//     HardwareCvm { state: HardwareCvmVtl1State },
+//     VbsIsolated { state: VbsIsolatedVtl1State },
+// }
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
 #[derive(Clone, Copy, Default, Inspect)]
-struct VbsIsolatedVtl1State {
+struct HypervisorBackedVtl1State {
     #[inspect(with = "|flags| flags.map(|f| inspect::AsHex(u32::from(f)))")]
     default_vtl_protections: Option<HvMapGpaFlags>,
     enable_vtl_protection: bool,
@@ -635,7 +647,7 @@ impl UhPartition {
     pub fn revoke_guest_vsm(&self) -> Result<(), RevokeGuestVsmError> {
         let mut vsm_state = self.inner.guest_vsm.write();
 
-        if matches!(*vsm_state, GuestVsmState::Enabled { vtl1: _ }) {
+        if matches!(*vsm_state, GuestVsmState::Enabled) {
             return Err(RevokeGuestVsmError::Vtl1AlreadyEnabled);
         }
 
@@ -1158,6 +1170,15 @@ pub struct UhLateParams<'a> {
     pub shared_vis_pages_pool: Option<shared_pool_alloc::SharedPoolAllocator>,
 }
 
+#[allow(missing_docs)]
+#[derive(Debug, Error)]
+pub enum SetVtl1ProtectionsError {
+    #[error("Changing default protections is not allowed")]
+    ExistingDefaultProtections,
+    #[error("Applying default protections failed")]
+    ApplyDefaultProtections(#[source] HvError),
+}
+
 /// Trait for CVM-related protections on guest memory.
 pub trait ProtectIsolatedMemory: Send + Sync {
     /// Changes host visibility on guest memory.
@@ -1202,6 +1223,11 @@ pub trait ProtectIsolatedMemory: Send + Sync {
 
     /// Disables the overlay for the hypercall code page for a target VTL.
     fn disable_hypercall_overlay(&self, vtl: GuestVtl);
+
+    fn set_vtl1_protections(
+        &self,
+        default_protections: HvMapGpaFlags,
+    ) -> Result<(), SetVtl1ProtectionsError>;
 
     /// Alerts the memory protector that vtl 1 is ready to set vtl protections
     /// on lower-vtl memory, and that these protections should be enforced.
@@ -1728,10 +1754,19 @@ impl UhProtoPartition<'_> {
                 .collect();
             let tlb_locked_vps =
                 VtlArray::from_fn(|_| BitVec::repeat(false, vp_count).into_boxed_bitslice());
+            let vtl1_state = HardwareCvmVtl1State {
+                enabled_on_vp_count: 0,
+                zero_memory_on_reset: false,
+                deny_lower_vtl_startup: false,
+                mbec_enabled: false,
+                shadow_supervisor_stack_enabled: false,
+            };
+
             UhCvmPartitionState {
                 cpuid,
                 tlb_locked_vps,
                 tlb_lock_info,
+                guest_vsm_vtl1_state: RwLock::new(vtl1_state),
             }
         });
 

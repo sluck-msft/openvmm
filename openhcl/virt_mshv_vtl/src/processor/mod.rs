@@ -155,6 +155,7 @@ pub struct LapicState {
 
 mod private {
     use super::vp_state;
+    use super::HardwareIsolatedBacking;
     use super::UhRunVpError;
     use crate::processor::UhProcessor;
     use crate::BackingShared;
@@ -164,6 +165,7 @@ mod private {
     use hcl::ioctl::ProcessorRunner;
     use hv1_emulator::hv::ProcessorVtlHv;
     use hv1_emulator::synic::ProcessorSynic;
+    use hvdef::HvMapGpaFlags;
     use inspect::InspectMut;
     use std::future::Future;
     use virt::io::CpuIo;
@@ -247,6 +249,12 @@ mod private {
 
         fn untrusted_synic(&self) -> Option<&ProcessorSynic>;
         fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic>;
+
+        // fn default_vtl_protections(&self) -> Option<HvMapGpaFlags>;
+        // fn set_default_vtl_protections(&mut self, flags: HvMapGpaFlags);
+
+        // fn vtl1_protections_enabled(&self) -> bool;
+        // fn set_vtl1_protections_enabled(&mut self);
     }
 }
 
