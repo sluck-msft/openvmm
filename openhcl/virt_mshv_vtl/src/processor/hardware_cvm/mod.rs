@@ -83,8 +83,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
 
         // Grant VTL 1 access to lower VTL memory
         tracing::debug!("Granting VTL 1 access to lower VTL memory");
-        protector
-            .change_default_vtl_protections(GuestVtl::Vtl1, hvdef::HV_MAP_GPA_PERMISSIONS_ALL)?;
+        protector.change_vtl1_default_access(hvdef::HV_MAP_GPA_PERMISSIONS_ALL);
 
         tracing::debug!("Successfully granted vtl 1 access to lower vtl memory");
 
@@ -583,9 +582,10 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             .expect("isolated memory protector must exist for a CVM");
 
         protector
-            .set_vtl1_protections(protections)
+            .set_vtl1_protections(protections, value.enable_vtl_protection())
             .map_err(|e| match e {
-                SetVtl1ProtectionsError::ExistingDefaultProtections => {
+                SetVtl1ProtectionsError::ExistingDefaultProtections
+                | SetVtl1ProtectionsError::ProtectionsAlreadyEnabled => {
                     HvError::InvalidRegisterValue
                 }
                 SetVtl1ProtectionsError::ApplyDefaultProtections(hv_error) => hv_error,

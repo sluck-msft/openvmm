@@ -665,6 +665,9 @@ mod mapping {
             vtl: Vtl,
             protections: GpaVtlPermissions,
         ) -> Result<(), ApplyVtlProtectionsError> {
+            // This does not need to be synchronized against other
+            // threads performing VTL protection changes; whichever thread
+            // finishes last will control the outcome.
             match protections {
                 GpaVtlPermissions::Vbs(flags) => {
                     // For VBS-isolated VMs, the permissions apply to all lower
@@ -827,6 +830,50 @@ mod mapping {
                 .apply_protections(range, vtl.into(), overlay.permissions)?;
 
             Ok(())
+        }
+
+        fn change_default_vtl_protections(&self, vtl: GuestVtl, vtl_protections: HvMapGpaFlags) {
+            // Prevent visibility changes while VTL protections are being
+            // applied.
+            //
+            // TODO GUEST VSM: Changes to vtl protections will need to be
+            // synchronized with any checks for VTL protections (e.g. rmpquery)
+            let mut inner = self.inner.lock();
+
+            inner.default_vtl_permissions.set(vtl, vtl_protections);
+
+            let mut ranges = Vec::new();
+            for ram_range in self.layout.ram().iter() {
+                let mut protect_start = ram_range.range.start();
+                let mut page_count = 0;
+
+                for gpn in ram_range.range.start() / PAGE_SIZE as u64
+                    ..ram_range.range.end() / PAGE_SIZE as u64
+                {
+                    // TODO GUEST_VSM: for now, use the encrypted mapping to
+                    // find all accepted memory. When lazy acceptance exists,
+                    // this should track all pages that have been accepted and
+                    // should be used instead.
+                    if !inner.encrypted.check_bitmap(gpn) {
+                        if page_count > 0 {
+                            let end_address = protect_start + (page_count * PAGE_SIZE as u64);
+                            ranges.push(MemoryRange::new(protect_start..end_address));
+                        }
+                        protect_start = (gpn + 1) * PAGE_SIZE as u64;
+                        page_count = 0;
+                    } else {
+                        page_count += 1;
+                    }
+                }
+
+                if page_count > 0 {
+                    let end_address = protect_start + (page_count * PAGE_SIZE as u64);
+                    ranges.push(MemoryRange::new(protect_start..end_address));
+                }
+            }
+
+            self.apply_protections_with_overlay_handling(vtl, &ranges, vtl_protections)
+                .expect("applying vtl protections should succeed");
         }
     }
 
@@ -999,62 +1046,12 @@ mod mapping {
             Ok(())
         }
 
-        fn default_vtl0_protections(&self) -> HvMapGpaFlags {
-            self.inner.lock().default_vtl_permissions.vtl0
-        }
+        // fn default_vtl0_protections(&self) -> HvMapGpaFlags {
+        //     self.inner.lock().default_vtl_permissions.vtl0
+        // }
 
-        fn change_default_vtl_protections(
-            &self,
-            vtl: GuestVtl,
-            vtl_protections: HvMapGpaFlags,
-        ) -> Result<(), HvError> {
-            // Prevent visibility changes while VTL protections are being
-            // applied.
-            //
-            // TODO: This does not need to be synchronized against other
-            // threads performing VTL protection changes; whichever thread
-            // finishes last will control the outcome.
-            //
-            // TODO GUEST VSM: Changes to vtl protections will need to be
-            // synchronized with any checks for VTL protections (e.g. rmpquery)
-            let mut inner = self.inner.lock();
-
-            inner.default_vtl_permissions.set(vtl, vtl_protections);
-
-            let mut ranges = Vec::new();
-            for ram_range in self.layout.ram().iter() {
-                let mut protect_start = ram_range.range.start();
-                let mut page_count = 0;
-
-                for gpn in ram_range.range.start() / PAGE_SIZE as u64
-                    ..ram_range.range.end() / PAGE_SIZE as u64
-                {
-                    // TODO GUEST_VSM: for now, use the encrypted mapping to
-                    // find all accepted memory. When lazy acceptance exists,
-                    // this should track all pages that have been accepted and
-                    // should be used instead.
-                    if !inner.encrypted.check_bitmap(gpn) {
-                        if page_count > 0 {
-                            let end_address = protect_start + (page_count * PAGE_SIZE as u64);
-                            ranges.push(MemoryRange::new(protect_start..end_address));
-                        }
-                        protect_start = (gpn + 1) * PAGE_SIZE as u64;
-                        page_count = 0;
-                    } else {
-                        page_count += 1;
-                    }
-                }
-
-                if page_count > 0 {
-                    let end_address = protect_start + (page_count * PAGE_SIZE as u64);
-                    ranges.push(MemoryRange::new(protect_start..end_address));
-                }
-            }
-
-            self.apply_protections_with_overlay_handling(vtl, &ranges, vtl_protections)
-                .expect("applying vtl protections should succeed");
-
-            Ok(())
+        fn change_vtl1_default_access(&self, protections: HvMapGpaFlags) {
+            self.change_default_vtl_protections(GuestVtl::Vtl1, protections);
         }
 
         fn change_vtl_protections(
@@ -1200,30 +1197,44 @@ mod mapping {
         fn set_vtl1_protections(
             &self,
             default_protections: HvMapGpaFlags,
+            enable_protections: bool,
         ) -> Result<(), SetVtl1ProtectionsError> {
-            let mut inner = self.inner.lock();
+            let target_vtl = GuestVtl::Vtl0;
+            let mut apply_vtl_protections = false;
 
-            // Don't allow changing existing protections once vtl protection is enabled
-            if self.default_vtl0_protections() != default_protections {
-                if self.vtl1_protections_enabled() {
-                    return Err(SetVtl1ProtectionsError::ExistingDefaultProtections);
+            // TODO: Nope, locking here not sufficient. Doesn't stop two threads
+            // from changing the default protections at the same time.
+            {
+                let mut inner = self.inner.lock();
+
+                if !enable_protections && inner.vtl1_protections_enabled {
+                    return Err(SetVtl1ProtectionsError::ProtectionsAlreadyEnabled);
                 }
 
-                let targeted_vtl = GuestVtl::Vtl0;
-                self.change_default_vtl_protections(targeted_vtl, default_protections)
-                    .map_err(SetVtl1ProtectionsError::ApplyDefaultProtections)?;
+                // Don't allow changing existing protections once vtl protection is enabled
+                if inner.default_vtl_permissions.vtl0 != default_protections {
+                    if inner.vtl1_protections_enabled {
+                        return Err(SetVtl1ProtectionsError::ExistingDefaultProtections);
+                    }
+
+                    apply_vtl_protections = true;
+                }
 
                 // TODO GUEST VSM: actually use the enable_vtl_protection value
-                // when deciding whether to check vtl access();
-                inner.vtl1_protections_enabled = true;
+                // when deciding whether to check vtl access
+                inner.vtl1_protections_enabled = enable_protections;
+            }
+
+            if apply_vtl_protections {
+                self.change_default_vtl_protections(target_vtl, default_protections);
             }
 
             Ok(())
         }
 
-        fn set_vtl1_protections_enabled(&self) {
-            self.inner.lock().vtl1_protections_enabled = true;
-        }
+        // fn set_vtl1_protections_enabled(&self) {
+        //     self.inner.lock().vtl1_protections_enabled = true;
+        // }
 
         fn vtl1_protections_enabled(&self) -> bool {
             self.inner.lock().vtl1_protections_enabled

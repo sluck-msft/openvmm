@@ -1177,6 +1177,8 @@ pub enum SetVtl1ProtectionsError {
     ExistingDefaultProtections,
     #[error("Applying default protections failed")]
     ApplyDefaultProtections(#[source] HvError),
+    #[error("Cannot disable vtl protections when they're already enabled")]
+    ProtectionsAlreadyEnabled,
 }
 
 /// Trait for CVM-related protections on guest memory.
@@ -1191,17 +1193,11 @@ pub trait ProtectIsolatedMemory: Send + Sync {
         host_visibility: &mut [HostVisibilityType],
     ) -> HvRepResult;
 
-    /// Gets the default protections/permissions for VTL 0.
-    fn default_vtl0_protections(&self) -> HvMapGpaFlags;
+    // /// Gets the default protections/permissions for VTL 0.
+    // fn default_vtl0_protections(&self) -> HvMapGpaFlags;
 
-    /// Changes the default protections/permissions for a VTL. For VBS-isolated
-    /// VMs, the protections apply to all vtls lower than the specified one. For
-    /// hardware-isolated VMs, they apply just to the given vtl.
-    fn change_default_vtl_protections(
-        &self,
-        vtl: GuestVtl,
-        protections: HvMapGpaFlags,
-    ) -> Result<(), HvError>;
+    /// Grants VTL 1 access to memory
+    fn change_vtl1_default_access(&self, protections: HvMapGpaFlags);
 
     /// Changes the vtl protections on a range of guest memory.
     fn change_vtl_protections(
@@ -1224,14 +1220,19 @@ pub trait ProtectIsolatedMemory: Send + Sync {
     /// Disables the overlay for the hypercall code page for a target VTL.
     fn disable_hypercall_overlay(&self, vtl: GuestVtl);
 
+    /// Sets the VTL 1 configuration for VTL protections, incluuding the default
+    /// vtl protections and whether vtl protections should be enforced. Only
+    /// implemented for CVMs, so the default protections apply to the lower
+    /// VTLs.
     fn set_vtl1_protections(
         &self,
         default_protections: HvMapGpaFlags,
+        enable_protections: bool,
     ) -> Result<(), SetVtl1ProtectionsError>;
 
     /// Alerts the memory protector that vtl 1 is ready to set vtl protections
     /// on lower-vtl memory, and that these protections should be enforced.
-    fn set_vtl1_protections_enabled(&self);
+    // fn set_vtl1_protections_enabled(&self);
 
     /// Whether VTL 1 is prepared to modify vtl protections on lower-vtl memory,
     /// and therefore whether these protections should be enforced.
