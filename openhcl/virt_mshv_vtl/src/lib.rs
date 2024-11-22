@@ -811,6 +811,8 @@ impl virt::Synic for UhPartition {
         // TODO TDX TODO SNP: Disable monitor support for TDX and SNP as support
         // for VTL2 protections is needed to emulate this page, which is not
         // implemented yet.
+        //
+        // sluck: not important. We don't have monitor support.
         if self.inner.isolation.is_hardware_isolated() {
             None
         } else {

@@ -65,6 +65,8 @@ pub fn generate_snp_measurement(
                     _ => {
                         // TODO SNP: Need to check the PSP spec how to measure 2MB
                         // pages. Fail for now, as they shouldn't exist.
+                        //
+                        // sluck: HCL doesn't do it either.
                         todo!(
                             "unable to measure greater than 4k pages, len: {}",
                             data.len()

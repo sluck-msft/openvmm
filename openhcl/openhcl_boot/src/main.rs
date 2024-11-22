@@ -498,6 +498,8 @@ fn build_cc_blob_sev_info(
 ) {
     // TODO SNP: Currently only the first CPUID page is passed through.
     // Consider changing this.
+    //
+    // sluck: LSG thing but not important.
     cc_blob.magic = loader_defs::linux::CC_BLOB_SEV_INFO_MAGIC;
     cc_blob.version = 0;
     cc_blob._reserved = 0;

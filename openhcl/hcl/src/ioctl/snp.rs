@@ -60,6 +60,8 @@ impl MshvVtl {
     /// The range must not be mapped in the kernel as RAM.
     //
     // TODO SNP: figure out a safer model for this here and in the kernel.
+    //
+    // sluck: there might be missing kernel work? not sure.
     pub fn pvalidate_pages(
         &self,
         range: MemoryRange,
@@ -70,6 +72,7 @@ impl MshvVtl {
         // SAFETY: TODO SNP: we are passing parameters as the kernel requires.
         // But this isn't really safe because it could be used to unaccept a
         // VTL2 kernel page. Kernel changes are needed to make this safe.
+        // sluck: investigate
         let ret = unsafe {
             hcl_pvalidate_pages(
                 self.file.as_raw_fd(),
@@ -98,6 +101,8 @@ impl MshvVtl {
     /// The range must not be mapped in the kernel as RAM.
     //
     // TODO SNP: figure out a safer model for this here and in the kernel.
+    //
+    // sluck: maybe missing kernel changes?
     pub fn rmpadjust_pages(
         &self,
         range: MemoryRange,
@@ -106,6 +111,11 @@ impl MshvVtl {
     ) -> Result<(), SnpPageError> {
         if value.vmsa() {
             // TODO SNP: VMSA conversion does not work.
+            //
+            // sluck: we're not currently using it here, but we might want to in
+            // the future. Kernel just wasn't cooperating, something to do with
+            // how they were allocating memory. Not required for ship, might
+            // want in future.
             return Ok(());
         }
 

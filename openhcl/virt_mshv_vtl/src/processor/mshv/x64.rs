@@ -758,8 +758,12 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                 UhRunVpError::UnacceptedMemoryAccess(gpa),
             ))
         } else {
-            // TODO SNP: for hardware isolation, if the intercept is due to a guest
-            // error, inject a machine check
+            // TODO SNP: for hardware isolation, if the intercept is due to a
+            // guest error, inject a machine check
+            //
+            // sluck: was added in the HCL b/c it helped to diagnose issues. If
+            // you continue, it would reissue the fault. Not ship blocker, but
+            // probably want it.
             self.handle_mmio_exit(dev).await?;
             Ok(())
         }

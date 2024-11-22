@@ -1089,6 +1089,10 @@ fn new_x86_topology(
 
     // TODO SNP: Topology information should probably be passed in via device
     // params. The topology needs to also be validated.
+    //
+    // sluck: investigate - the question is whether the topology needs to be
+    // configured differently. Should do what do in HCL, it comes as a
+    // configuration and we build from the configuration.
     TopologyBuilder::from_host_topology()
         .context("failed to build topology from host")?
         .x2apic(x2apic)

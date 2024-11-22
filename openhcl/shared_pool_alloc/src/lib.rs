@@ -122,6 +122,8 @@ impl Drop for SharedPoolHandle {
 ///
 // TODO SNP: Implement save restore. This means additionally having some sort of
 // restore_alloc method that maps to an existing allocation.
+//
+// sluck: this is for servicing.
 #[derive(Inspect)]
 pub struct SharedPool {
     #[inspect(flatten)]

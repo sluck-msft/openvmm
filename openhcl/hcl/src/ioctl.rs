@@ -788,6 +788,10 @@ impl MshvHvcall {
     //
     // TODO SNP: this isn't really safe. Probably this should be an IOCTL in the
     // kernel so that it can validate the page ranges are VTL0 memory.
+    //
+    // sluck: investigate. Make sure not passing in VTL 2 memory. Doesn't need
+    // to be kernel code, can validate in user mode. Might be required for ship
+    // (if callers hook up to guest operations).
     pub fn modify_gpa_visibility(
         &self,
         host_visibility: HostVisibilityType,
@@ -2611,9 +2615,13 @@ impl Hcl {
 
         match self.isolation {
             IsolationType::None | IsolationType::Vbs => caps,
-            // TODO SNP: Return actions may be useful, but with alternate injection many of these need
-            // cannot actually be processed by the hypervisor without returning to VTL2.
-            // Filter them out for now.
+            // TODO SNP: Return actions may be useful, but with alternate
+            // injection many of these need cannot actually be processed by the
+            // hypervisor without returning to VTL2. Filter them out for now.
+            //
+            // sluck: return actions not useful, so we're not showing them
+            // through. These return actions cannot be used. If we have secure
+            // avic for both, then we could consider having return actions.
             IsolationType::Snp => hvdef::HvRegisterVsmCapabilities::new()
                 .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
                 .with_intercept_page_available(caps.intercept_page_available()),

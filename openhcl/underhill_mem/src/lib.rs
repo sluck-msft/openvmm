@@ -686,6 +686,8 @@ mod mapping {
                             vtl: vtl.into(),
                         })
                     // TODO SNP: Flush TLB
+                    //
+                    // sluck: seems important.
                 }
                 GpaVtlPermissions::Tdx((attributes, mask)) => {
                     // For TDX VMs, the permissions apply to the specified VTL.
@@ -891,6 +893,8 @@ mod mapping {
             }
 
             // TODO SNP: flush concurrent accessors and TLB.
+            //
+            // sluck: ?
 
             // TODO SNP: check list of locks, roll back bitmap changes if there was one.
 

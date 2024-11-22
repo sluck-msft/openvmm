@@ -379,6 +379,10 @@ impl BackingPrivate for SnpBacked {
         if vtl == GuestVtl::Vtl0 {
             if let Some(irr) = this.runner.proxy_irr() {
                 // TODO SNP: filter proxy IRRs.
+                //
+                // sluck: look at the HCL. Filter based off of what vectors VTL
+                // 0 has told us are valid. Either a sint or device interrupt.
+                // or talk to Chris. Ship required for parity with the HCL.
                 this.backing.lapics[vtl].lapic.request_fixed_interrupts(irr);
             }
         }
@@ -590,8 +594,13 @@ impl<T: CpuIo> TranslateGvaSupport for UhEmulationState<'_, '_, T, SnpBacked> {
 }
 
 fn init_vmsa(vmsa: &mut VmsaWrapper<'_, &mut SevVmsa>, vtl: GuestVtl, vtom: Option<u64>) {
-    // Query the SEV_FEATURES MSR to determine the features enabled on VTL2's VMSA
-    // and use that to set btb_isolation, prevent_host_ibs, and VMSA register protection.
+    // TODO SNP: Query the SEV_FEATURES MSR to determine the features enabled on
+    // VTL2's VMSA and use that to set btb_isolation, prevent_host_ibs, and VMSA
+    // register protection.
+    //
+    // sluck: This is what we do in legacy HCL. Ship blocker b/c policy comes
+    // from the VMSA baked in IGVM file (doesn't have to be VMSA), but we should
+    // be consistent.
     let msr = devmsr::MsrDevice::new(0).expect("open msr");
     let sev_status = SevStatusMsr::from(msr.read_msr(x86defs::X86X_AMD_MSR_SEV).expect("read msr"));
     tracing::info!("VMSA creation {:?} {:?}", vtl, sev_status);
@@ -730,6 +739,8 @@ impl<T> HypercallIo for GhcbEnlightenedHypercall<'_, '_, '_, T> {
     fn retry(&mut self, control: u64) {
         // TODO SNP: If we need to support resumption of rep hypercalls,
         // this will need the new start index.
+        //
+        // sluck: might be done already?
         *self.control = control;
         self.set_result(HypercallOutput::from(HvError::Timeout).into())
     }
@@ -786,9 +797,12 @@ impl UhProcessor<'_, SnpBacked> {
     }
 
     fn handle_nmi(&mut self, vtl: GuestVtl) {
-        // TODO SNP: support virtual NMI injection
-        // For now, just inject an NMI and hope for the best.
-        // Don't forget to update handle_cross_vtl_interrupts if this code changes.
+        // TODO SNP: support virtual NMI injection For now, just inject an NMI
+        // and hope for the best. Don't forget to update
+        // handle_cross_vtl_interrupts if this code changes.
+        //
+        // sluck: this can only be fixed once we have hardware that supports NMI
+        // virtualization. (Alex will know)
         let mut vmsa = self.runner.vmsa_mut(vtl);
         vmsa.set_event_inject(
             SevEventInjectInfo::new()
@@ -865,6 +879,10 @@ impl UhProcessor<'_, SnpBacked> {
                     self.backing.direct_overlays_pfns[UhDirectOverlay::Ghcb as usize];
 
                 // TODO SNP: Should allow arbitrary page to be used for GHCB
+                //
+                // sluck: b/c the guest can change it. Probably should do it.
+                // This is vmbus-relay-related. (vmgexit is ghcb calls, we don't
+                // handle those in the HCL, only here for vmbus relay)
                 if ghcb_pfn != ghcb_overlay {
                     tracelimit::warn_ratelimited!(
                         vmgexit_pfn = ghcb_pfn,
@@ -990,6 +1008,7 @@ impl UhProcessor<'_, SnpBacked> {
         let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
 
         // TODO SNP: The guest busy bit needs to be tested and set atomically.
+        // sluck: without this, we don't have security
         if vmsa.v_intr_cntrl().guest_busy() {
             self.backing.general_stats[entered_from_vtl]
                 .guest_busy
@@ -1001,6 +1020,8 @@ impl UhProcessor<'_, SnpBacked> {
             // delivery generates an intercept.
             //
             // TODO SNP: Handle ICEBP.
+            //
+            // sluck: needs to be at least a panic. Ask Alex what it is. Handle icebp by panicking.
             let exit_int_info = SevEventInjectInfo::from(vmsa.exit_int_info());
             debug_assert!(exit_int_info.valid());
 
@@ -1218,6 +1239,9 @@ impl UhProcessor<'_, SnpBacked> {
                 // TODO SNP: reissue these locally to forward them to the
                 // hypervisor. This isn't pressing because the hypervisor
                 // currently doesn't do anything with these for guest VMs.
+                //
+                // sluck: the HCL sends them to the hv, hv does nothing. it's
+                // complete.
                 advance_to_next_instruction(&mut vmsa);
                 &mut self.backing.exit_stats[entered_from_vtl].invd
             }
@@ -1401,6 +1425,8 @@ impl UhProcessor<'_, SnpBacked> {
                     // Ignore.
                     //
                     // TODO SNP: Figure out why we are getting these.
+                    //
+                    // sluck: We're not supposed to be getting them.
                 }
                 message_type => {
                     tracelimit::error_ratelimited!(?message_type, "unknown synthetic exit");
@@ -1806,7 +1832,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
         Ok(vp::Activity {
             mp_state,
             nmi_pending: lapic.nmi_pending,
-            nmi_masked: false,          // TODO SNP
+            nmi_masked: false,          // TODO SNP sluck: investigate.
             interrupt_shadow: false,    // TODO SNP
             pending_event: None,        // TODO SNP
             pending_interruption: None, // TODO SNP

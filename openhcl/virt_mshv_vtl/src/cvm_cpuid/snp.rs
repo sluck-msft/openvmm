@@ -124,6 +124,8 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
 
     fn extended_max_function(&self) -> u32 {
         // TODO SNP: This is 0x80000026 in the OS repo
+        //
+        // sluck: this might matter for compat
         CpuidFunction::ExtendedAmdMaximum.0
     }
 
