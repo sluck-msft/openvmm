@@ -240,9 +240,15 @@ mod private {
         /// This is used for hypervisor-managed and untrusted SINTs.
         fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16);
 
-        // TODO: try not to put this here
-        fn set_exit_vtl(_this: &mut UhProcessor<'_, Self>, _vtl: GuestVtl) {
-            unimplemented!("set_exit_vtl not implemented");
+        /// Copies shared registers (per VSM TLFS spec) from the source VTL to
+        /// the target VTL that will become active, and marks the target_vtl as
+        /// the exit vtl.
+        fn switch_vtl(
+            _this: &mut UhProcessor<'_, Self>,
+            _source_vtl: GuestVtl,
+            _target_vtl: GuestVtl,
+        ) {
+            unimplemented!("switch_vtl not implemented");
         }
 
         /// Checks interrupt status for all VTLs, and handles cross VTL interrupt preemption and VINA.
@@ -287,13 +293,7 @@ pub trait HardwareIsolatedBacking: Backing {
     fn cvm_state_mut(&mut self) -> &mut crate::UhCvmVpState;
     /// Gets CVM specific partition state.
     fn cvm_partition_state(shared: &Self::Shared) -> &crate::UhCvmPartitionState;
-    /// Copies shared registers (per VSM TLFS spec) from the source VTL to
-    /// the target VTL that will become active.
-    fn switch_vtl_state(
-        this: &mut UhProcessor<'_, Self>,
-        source_vtl: GuestVtl,
-        target_vtl: GuestVtl,
-    );
+
     /// Gets registers needed for gva to gpa translation
     fn translation_registers(
         &self,
