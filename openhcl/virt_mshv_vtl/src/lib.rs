@@ -340,6 +340,7 @@ struct UhCvmVpState {
     lapics: VtlArray<LapicState, 2>,
     /// Whether VTL 1 has been enabled on this VP.
     vtl1_enabled: bool,
+    vtl1_cr_intercept: ControlRegisterInterceptState,
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -385,10 +386,22 @@ impl UhCvmVpState {
             hv,
             lapics,
             vtl1_enabled: false,
+            vtl1_cr_intercept: Default::default(),
         })
     }
 }
 
+#[cfg(guest_arch = "x86_64")]
+#[derive(Inspect, Default)]
+pub struct ControlRegisterInterceptState {
+    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    intercept_control: hvdef::HvRegisterCrInterceptControl,
+    cr0_mask: u64,
+    cr4_mask: u64,
+    ia32_misc_enable_mask: u64,
+}
+
+#[cfg(guest_arch = "x86_64")]
 #[derive(Inspect)]
 /// Partition-wide state for CVMs.
 struct UhCvmPartitionState {
