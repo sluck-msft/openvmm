@@ -340,7 +340,7 @@ struct UhCvmVpState {
     lapics: VtlArray<LapicState, 2>,
     /// Whether VTL 1 has been enabled on this VP.
     vtl1_enabled: bool,
-    vtl1_cr_intercept: ControlRegisterInterceptState,
+    vtl1_reg_intercept: SecureRegisterInterceptState,
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -362,7 +362,11 @@ impl UhCvmVpState {
         let apic_base = virt::vp::Apic::at_reset(&inner.caps, vp_info).apic_base;
         let lapics = VtlArray::from_fn(|vtl| {
             let apic_set = &cvm_partition.lapic[vtl];
-            let mut lapic = apic_set.add_apic(vp_info);
+
+            // The APIC is software-enabled after reset for
+            // secure VTLs, to maintain compatibility with released versions of secure
+            // kernel
+            let mut lapic = apic_set.add_apic(vp_info, vtl == Vtl::Vtl1);
             // Initialize APIC base to match the reset VM state.
             lapic.set_apic_base(apic_base).unwrap();
             // Only the VTL 0 non-BSP LAPICs should be in the WaitForSipi state.
@@ -386,14 +390,14 @@ impl UhCvmVpState {
             hv,
             lapics,
             vtl1_enabled: false,
-            vtl1_cr_intercept: Default::default(),
+            vtl1_reg_intercept: Default::default(),
         })
     }
 }
 
 #[cfg(guest_arch = "x86_64")]
 #[derive(Inspect, Default)]
-pub struct ControlRegisterInterceptState {
+pub struct SecureRegisterInterceptState {
     #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
     intercept_control: hvdef::HvRegisterCrInterceptControl,
     cr0_mask: u64,

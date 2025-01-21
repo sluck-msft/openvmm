@@ -537,9 +537,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 Ok(())
             }
             HvX64RegisterName::CrInterceptControl => {
-                tracing::info!(?reg, "handling write to cr intercept control register");
                 if vtl != GuestVtl::Vtl1 {
-                    tracing::info!("cr intercept control register can only be written by VTL 1");
                     return Err(HvError::AccessDenied);
                 }
 
@@ -575,9 +573,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             mask_reg @ (HvX64RegisterName::CrInterceptCr0Mask
             | HvX64RegisterName::CrInterceptCr4Mask
             | HvX64RegisterName::CrInterceptIa32MiscEnableMask) => {
-                tracing::info!(?reg, "handling write to cr intercept mask register");
                 if vtl != GuestVtl::Vtl1 {
-                    tracing::info!("cr intercept mask register can only be written by VTL 1");
                     return Err(HvError::AccessDenied);
                 }
                 let mask = match mask_reg {
