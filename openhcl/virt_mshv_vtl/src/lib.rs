@@ -650,10 +650,19 @@ struct UhVpInner {
     sidecar_exit_reason: Mutex<Option<SidecarExitReason>>,
 }
 
+#[derive(Debug, Inspect)]
+struct UhVpCvmVtl1State {
+    /// Whether VTL 1 has been enabled on the vp.
+    enabled: bool,
+    /// Whether the StartVirtualProcessor hypercall has been called for this vp.
+    started: bool,
+}
+
 #[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
 #[derive(Debug, Inspect)]
 /// State for handling StartVp/EnableVpVtl hypercalls.
 pub struct VpStartEnableVtl {
+    /// True if the context is for startvp, false for enablevpvtl
     is_start: bool,
     #[inspect(skip)]
     context: hvdef::hypercall::InitialVpContextX64,

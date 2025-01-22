@@ -851,7 +851,8 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
     fn vtl_call(&mut self) {
         tracing::trace!("handling vtl call");
 
-        B::switch_vtl(self.vp, self.intercepted_vtl, GuestVtl::Vtl1);
+        B::switch_vtl_state(self.vp, self.intercepted_vtl, GuestVtl::Vtl1);
+        B::set_exit_vtl(self.vp, GuestVtl::Vtl1);
 
         self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
             .set_return_reason(HvVtlEntryReason::VTL_CALL)
@@ -884,7 +885,11 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
             hv.set_vina_asserted(false).unwrap();
         }
 
-        B::switch_vtl(self.vp, self.intercepted_vtl, GuestVtl::Vtl0);
+        B::switch_vtl_state(self.vp, self.intercepted_vtl, GuestVtl::Vtl0);
+        B::set_exit_vtl(self.vp, GuestVtl::Vtl0);
+
+        // TODO CVM GUEST_VSM:
+        // - rewind interrupts
 
         if !fast {
             let [rax, rcx] = self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
@@ -938,7 +943,7 @@ impl<T, B: HardwareIsolatedBacking>
         // The target VTL must have been enabled. In addition, if lower VTL
         // startup has been suppressed, then the request must be coming from a
         // secure VTL.
-        if target_vtl == GuestVtl::Vtl1 && !*target_vp.hcvm_vtl1_enabled.lock() {
+        if target_vtl == GuestVtl::Vtl1 && !target_vp.hcvm_vtl1_state.lock().enabled {
             return Err(HvError::InvalidVpState);
         }
 
@@ -949,10 +954,37 @@ impl<T, B: HardwareIsolatedBacking>
                 .guest_vsm
                 .read()
                 .get_hardware_cvm()
-                .map_or(false, |inner| inner.deny_lower_vtl_startup)
+                .is_some_and(|inner| inner.deny_lower_vtl_startup)
         {
             return Err(HvError::AccessDenied);
         }
+
+        // The StartVp hypercall is intended to work like an INIT, so it
+        // theoretically can be called on an already running VP. However, this
+        // makes it more difficult to reason about how to interact with higher
+        // vtls and with the DenyLowerVtlStartup, and in practice, it's not clear
+        // whether any guest OS does this. For now, if guest vsm is enabled,
+        // simplify by disallowing repeated vp startup. Revisit this later if it
+        // becomes a problem. Note that this will not apply to non-hardware cvms
+        // as this may regress existing VMs.
+
+        let mut target_vp_vtl1_state = target_vp.hcvm_vtl1_state.lock();
+        if self
+            .vp
+            .partition
+            .guest_vsm
+            .read()
+            .get_hardware_cvm()
+            .is_some()
+            && target_vp_vtl1_state.started
+        {
+            return Err(HvError::InvalidVpState);
+        }
+
+        // There can be no more errors from here, so just set started to
+        // true while holding the lock
+
+        target_vp_vtl1_state.started = true;
 
         let start_state = VpStartEnableVtl {
             is_start: true,
@@ -1090,7 +1122,7 @@ impl<T, B: HardwareIsolatedBacking>
             .vtl1_enabled
             .lock();
 
-        if *vtl1_enabled {
+        if inner_vtl1_state.enabled {
             return Err(HvError::VtlAlreadyEnabled);
         }
 
@@ -1126,7 +1158,7 @@ impl<T, B: HardwareIsolatedBacking>
             gvsm.get_hardware_cvm_mut().unwrap().enabled_on_vp_count += 1;
         }
 
-        *vtl1_enabled = true;
+        inner_vtl1_state.enabled = true;
 
         let enable_vp_vtl_state = VpStartEnableVtl {
             is_start: false,
@@ -1424,7 +1456,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         if self.backing.cvm_state_mut().exit_vtl == GuestVtl::Vtl0 {
             // Check for VTL preemption - which ignores RFLAGS.IF
             if is_interrupt_pending(self, GuestVtl::Vtl1, false) {
-                B::switch_vtl(self, GuestVtl::Vtl0, GuestVtl::Vtl1);
+                B::switch_vtl_state(self, GuestVtl::Vtl0, GuestVtl::Vtl1);
+                B::set_exit_vtl(self, GuestVtl::Vtl1);
                 self.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
                     .set_return_reason(HvVtlEntryReason::INTERRUPT)
                     .map_err(UhRunVpError::VpAssistPage)?;
@@ -1472,21 +1505,35 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             )
             .map_err(UhRunVpError::State)?;
 
-            if vtl == GuestVtl::Vtl1 {
-                assert!(self.partition.isolation.is_hardware_isolated());
-                // Should have already initialized the hv emulator for this vtl
-                assert!(self.backing.hv(vtl).is_some());
-                // For start vp handling, no need to explicitly switch
-                // the exit vtl to VTL 1. Should already have validated
-                // that the intercepted VTL was not VTL 0.
-            } else {
-                if self.partition.isolation.is_hardware_isolated()
-                    && start_enable_vtl_state.is_start
-                    && *self.inner.hcvm_vtl1_enabled.lock()
-                {
-                    // If VTL 1 has been enabled, switch to it (the
-                    // highest enabled VTL should run first).
-                    T::switch_vtl(self, GuestVtl::Vtl0, GuestVtl::Vtl1);
+            if start_enable_vtl_state.is_start {
+                match vtl {
+                    GuestVtl::Vtl0 => {
+                        if self.inner.hcvm_vtl1_state.lock().enabled {
+                            // When starting a VP targeting VTL on a
+                            // hardware confidential VM, if VTL 1 has been
+                            // enabled, switch to it (the highest enabled
+                            // VTL should run first). This is largely true
+                            // because startvp is disallowed on a VP that
+                            // has already been started. If this is allowed
+                            // in the future, whether to switch to VTL 1 on
+                            // a second+ startvp call for a vp should be
+                            // revisited.
+                            //
+                            // For other VM types, the hypervisor is
+                            // responsible for running the correct VTL.
+                            //
+                            // Furthermore, there is no need to copy the
+                            // shared VTL registers if starting the VP on an
+                            // already running VP is disallowed. Even if
+                            // this was allowed, copying the registers may
+                            // not be desirable.
+
+                            T::set_exit_vtl(self, GuestVtl::Vtl1);
+                        }
+                    }
+                    GuestVtl::Vtl1 => {
+                        T::set_exit_vtl(self, GuestVtl::Vtl1);
+                    }
                 }
             }
         }

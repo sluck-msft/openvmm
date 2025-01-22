@@ -36,6 +36,7 @@ use super::UhPartitionInner;
 use super::UhVpInner;
 use crate::GuestVsmState;
 use crate::GuestVtl;
+use crate::UhVpCvmVtl1State;
 use crate::WakeReason;
 use hcl::ioctl;
 use hcl::ioctl::ProcessorRunner;
@@ -272,6 +273,7 @@ mod private {
         fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic>;
 
         fn vtl1_inspectable(this: &UhProcessor<'_, Self>) -> bool;
+        fn set_exit_vtl(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl);
     }
 }
 
@@ -293,7 +295,13 @@ pub trait HardwareIsolatedBacking: Backing {
     fn cvm_state_mut(&mut self) -> &mut crate::UhCvmVpState;
     /// Gets CVM specific partition state.
     fn cvm_partition_state(shared: &Self::Shared) -> &crate::UhCvmPartitionState;
-
+    /// Copies shared registers (per VSM TLFS spec) from the source VTL to
+    /// the target VTL that will become active.
+    fn switch_vtl_state(
+        this: &mut UhProcessor<'_, Self>,
+        source_vtl: GuestVtl,
+        target_vtl: GuestVtl,
+    );
     /// Gets registers needed for gva to gpa translation
     fn translation_registers(
         &self,
@@ -357,6 +365,10 @@ impl UhVpInner {
             waker: Default::default(),
             cpu_index,
             vp_info,
+            // hcvm_vtl1_state: Mutex::new(UhVpCvmVtl1State {
+            //     enabled: false,
+            //     started: cpu_index == 0,
+            // }),
             hv_start_enable_vtl_vp: VtlArray::from_fn(|_| Mutex::new(None)),
             sidecar_exit_reason: Default::default(),
         }
