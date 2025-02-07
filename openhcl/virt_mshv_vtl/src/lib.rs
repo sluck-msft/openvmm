@@ -346,6 +346,8 @@ pub struct UhCvmVpState {
     hv: VtlArray<ProcessorVtlHv, 2>,
     /// LAPIC state.
     lapics: VtlArray<LapicState, 2>,
+    vtl1_enabled: Mutex<bool>,
+    vp_started: bool,
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -382,6 +384,8 @@ impl UhCvmVpState {
             exit_vtl: GuestVtl::Vtl0,
             hv,
             lapics,
+            vtl1_enabled: Mutex::new(false),
+            vp_started: false,
         }
     }
 }
@@ -648,14 +652,6 @@ struct UhVpInner {
     #[inspect(with = "|arr| inspect::iter_by_index(arr.iter().map(|v| v.lock().is_some()))")]
     hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<VpStartEnableVtl>>>, 2>,
     sidecar_exit_reason: Mutex<Option<SidecarExitReason>>,
-}
-
-#[derive(Debug, Inspect)]
-struct UhVpCvmVtl1State {
-    /// Whether VTL 1 has been enabled on the vp.
-    enabled: bool,
-    /// Whether the StartVirtualProcessor hypercall has been called for this vp.
-    started: bool,
 }
 
 #[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]

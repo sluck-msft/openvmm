@@ -851,8 +851,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
     fn vtl_call(&mut self) {
         tracing::trace!("handling vtl call");
 
-        B::switch_vtl_state(self.vp, self.intercepted_vtl, GuestVtl::Vtl1);
-        B::set_exit_vtl(self.vp, GuestVtl::Vtl1);
+        B::switch_vtl(self.vp, self.intercepted_vtl, GuestVtl::Vtl1);
 
         self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
             .set_return_reason(HvVtlEntryReason::VTL_CALL)
@@ -885,8 +884,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
             hv.set_vina_asserted(false).unwrap();
         }
 
-        B::switch_vtl_state(self.vp, self.intercepted_vtl, GuestVtl::Vtl0);
-        B::set_exit_vtl(self.vp, GuestVtl::Vtl0);
+        B::switch_vtl(self.vp, self.intercepted_vtl, GuestVtl::Vtl0);
 
         // TODO CVM GUEST_VSM:
         // - rewind interrupts
@@ -1456,8 +1454,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         if self.backing.cvm_state_mut().exit_vtl == GuestVtl::Vtl0 {
             // Check for VTL preemption - which ignores RFLAGS.IF
             if is_interrupt_pending(self, GuestVtl::Vtl1, false) {
-                B::switch_vtl_state(self, GuestVtl::Vtl0, GuestVtl::Vtl1);
-                B::set_exit_vtl(self, GuestVtl::Vtl1);
+                B::switch_vtl(self, GuestVtl::Vtl0, GuestVtl::Vtl1);
                 self.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
                     .set_return_reason(HvVtlEntryReason::INTERRUPT)
                     .map_err(UhRunVpError::VpAssistPage)?;
@@ -1528,11 +1525,11 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                             // this was allowed, copying the registers may
                             // not be desirable.
 
-                            T::set_exit_vtl(self, GuestVtl::Vtl1);
+                            B::set_exit_vtl(self, GuestVtl::Vtl1);
                         }
                     }
                     GuestVtl::Vtl1 => {
-                        T::set_exit_vtl(self, GuestVtl::Vtl1);
+                        B::set_exit_vtl(self, GuestVtl::Vtl1);
                     }
                 }
             }

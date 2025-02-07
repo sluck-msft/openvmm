@@ -336,9 +336,7 @@ impl BackingPrivate for HypervisorBackedX86 {
     fn handle_vp_start_enable_vtl_wake(
         _this: &mut UhProcessor<'_, Self>,
         _vtl: GuestVtl,
-    ) -> Result<(), UhRunVpError>;
-
-    fn set_exit_vtl(_this: &mut UhProcessor<'_, Self>, _vtl: GuestVtl) {
+    ) -> Result<(), UhRunVpError> {
         unimplemented!()
     }
 

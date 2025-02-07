@@ -157,11 +157,7 @@ impl HardwareIsolatedBacking for SnpBacked {
         &shared.cvm
     }
 
-    fn switch_vtl_state(
-        this: &mut UhProcessor<'_, Self>,
-        source_vtl: GuestVtl,
-        target_vtl: GuestVtl,
-    ) {
+    fn switch_vtl(this: &mut UhProcessor<'_, Self>, source_vtl: GuestVtl, target_vtl: GuestVtl) {
         let [vmsa0, vmsa1] = this.runner.vmsas_mut();
         let (current_vmsa, mut target_vmsa) = match (source_vtl, target_vtl) {
             (GuestVtl::Vtl0, GuestVtl::Vtl1) => (vmsa0, vmsa1),
@@ -207,6 +203,8 @@ impl HardwareIsolatedBacking for SnpBacked {
             target_vmsa.set_xmm_registers(i, current_vmsa.xmm_registers(i));
             target_vmsa.set_ymm_registers(i, current_vmsa.ymm_registers(i));
         }
+
+        this.backing.cvm_state_mut().exit_vtl = target_vtl;
     }
 
     fn translation_registers(
@@ -516,10 +514,9 @@ impl BackingPrivate for SnpBacked {
     fn vtl1_inspectable(this: &UhProcessor<'_, Self>) -> bool {
         this.hcvm_vtl1_inspectable()
     }
-
-    fn set_exit_vtl(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) {
-        this.backing.cvm_state_mut().exit_vtl = vtl;
-    }
+    // fn set_exit_vtl(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) {
+    //     this.backing.cvm_state_mut().exit_vtl = vtl;
+    // }
 }
 
 fn virt_seg_to_snp(val: SegmentRegister) -> SevSelector {
