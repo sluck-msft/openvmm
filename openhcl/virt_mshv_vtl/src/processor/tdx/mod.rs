@@ -503,9 +503,11 @@ impl HardwareIsolatedBacking for TdxBacked {
         &shared.cvm
     }
 
-    fn switch_vtl(_this: &mut UhProcessor<'_, Self>, _source_vtl: GuestVtl, _target_vtl: GuestVtl) {
+    fn switch_vtl(this: &mut UhProcessor<'_, Self>, _source_vtl: GuestVtl, target_vtl: GuestVtl) {
         // The GPs, Fxsave, and CR2 are saved in the shared kernel state. No copying needed.
         // Debug registers and XFEM are shared architecturally. No copying needed.
+
+        this.backing.cvm_state_mut().exit_vtl = target_vtl;
     }
 
     fn translation_registers(
@@ -904,9 +906,6 @@ impl BackingPrivate for TdxBacked {
     fn vtl1_inspectable(this: &UhProcessor<'_, Self>) -> bool {
         this.hcvm_vtl1_inspectable()
     }
-    // fn set_exit_vtl(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) {
-    //     this.backing.cvm_state_mut().exit_vtl = vtl;
-    // }
 }
 
 impl UhProcessor<'_, TdxBacked> {

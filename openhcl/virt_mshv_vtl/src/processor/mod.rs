@@ -36,7 +36,6 @@ use super::UhPartitionInner;
 use super::UhVpInner;
 use crate::GuestVsmState;
 use crate::GuestVtl;
-// use crate::UhVpCvmVtl1State;
 use crate::WakeReason;
 use hcl::ioctl;
 use hcl::ioctl::ProcessorRunner;
@@ -241,17 +240,6 @@ mod private {
         /// This is used for hypervisor-managed and untrusted SINTs.
         fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16);
 
-        // /// Copies shared registers (per VSM TLFS spec) from the source VTL to
-        // /// the target VTL that will become active, and marks the target_vtl as
-        // /// the exit vtl.
-        // fn switch_vtl(
-        //     _this: &mut UhProcessor<'_, Self>,
-        //     _source_vtl: GuestVtl,
-        //     _target_vtl: GuestVtl,
-        // ) {
-        //     unimplemented!("switch_vtl not implemented");
-        // }
-
         /// Checks interrupt status for all VTLs, and handles cross VTL interrupt preemption and VINA.
         /// Returns whether interrupt reprocessing is required.
         fn handle_cross_vtl_interrupts(
@@ -303,10 +291,6 @@ pub trait HardwareIsolatedBacking: Backing {
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
     ) -> TranslationRegisters;
-    /// Sets the exit vtl
-    fn set_exit_vtl(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) {
-        this.backing.cvm_state_mut().exit_vtl = vtl;
-    }
 }
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
@@ -364,10 +348,6 @@ impl UhVpInner {
             waker: Default::default(),
             cpu_index,
             vp_info,
-            // hcvm_vtl1_state: Mutex::new(UhVpCvmVtl1State {
-            //     enabled: false,
-            //     started: cpu_index == 0,
-            // }),
             hv_start_enable_vtl_vp: VtlArray::from_fn(|_| Mutex::new(None)),
             sidecar_exit_reason: Default::default(),
         }

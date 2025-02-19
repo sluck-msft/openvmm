@@ -15,6 +15,7 @@ use crate::validate_vtl_gpa_flags;
 use crate::GuestVsmState;
 use crate::GuestVsmVtl1State;
 use crate::GuestVtl;
+use crate::InitialVpContextOperation;
 use crate::TlbFlushLockAccess;
 use crate::VpStartEnableVtl;
 use crate::WakeReason;
@@ -936,15 +937,15 @@ impl<T, B: HardwareIsolatedBacking>
         }
 
         let target_vtl = self.target_vtl_no_higher(target_vtl)?;
-        let target_vp = &self.vp.partition.vps[target_vp as usize];
+        let target_vp_inner = self.vp.cvm_partition().vp_inner(target_vp);
 
-        // The target VTL must have been enabled. In addition, if lower VTL
-        // startup has been suppressed, then the request must be coming from a
-        // secure VTL.
-        if target_vtl == GuestVtl::Vtl1 && !target_vp.hcvm_vtl1_state.lock().enabled {
+        // The target VTL must have been enabled.
+        if target_vtl == GuestVtl::Vtl1 && !*target_vp_inner.vtl1_enabled.lock() {
             return Err(HvError::InvalidVpState);
         }
 
+        // If lower VTL startup has been suppressed, then the request must be
+        // coming from a secure VTL.
         if self.intercepted_vtl == GuestVtl::Vtl0
             && self
                 .vp
@@ -952,7 +953,7 @@ impl<T, B: HardwareIsolatedBacking>
                 .guest_vsm
                 .read()
                 .get_hardware_cvm()
-                .is_some_and(|inner| inner.deny_lower_vtl_startup)
+                .is_some_and(|state| state.deny_lower_vtl_startup)
         {
             return Err(HvError::AccessDenied);
         }
@@ -966,29 +967,27 @@ impl<T, B: HardwareIsolatedBacking>
         // becomes a problem. Note that this will not apply to non-hardware cvms
         // as this may regress existing VMs.
 
-        let mut target_vp_vtl1_state = target_vp.hcvm_vtl1_state.lock();
-        if self
-            .vp
-            .partition
-            .guest_vsm
-            .read()
-            .get_hardware_cvm()
-            .is_some()
-            && target_vp_vtl1_state.started
+        // After this check, there can be no more failures, so try setting the
+        // fact that the VM started to true here.
+        if target_vp_inner
+            .started
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .is_err()
         {
             return Err(HvError::InvalidVpState);
         }
 
-        // There can be no more errors from here, so just set started to
-        // true while holding the lock
-
-        target_vp_vtl1_state.started = true;
-
         let start_state = VpStartEnableVtl {
-            is_start: true,
+            operation: InitialVpContextOperation::StartVp,
             context: *vp_context,
         };
 
+        let target_vp = &self.vp.partition.vps[target_vp as usize];
         *target_vp.hv_start_enable_vtl_vp[target_vtl].lock() = Some(Box::new(start_state));
         target_vp.wake(target_vtl, WakeReason::HV_START_ENABLE_VP_VTL);
 
@@ -1067,6 +1066,12 @@ impl<T, B: HardwareIsolatedBacking>
         vtl: Vtl,
         vp_context: &hvdef::hypercall::InitialVpContextX64,
     ) -> HvResult<()> {
+        tracing::debug!(
+            vp_index = self.vp.vp_index().index(),
+            target_vp = vp_index,
+            ?vtl,
+            "HvEnableVpVtl"
+        );
         if partition_id != hvdef::HV_PARTITION_ID_SELF {
             return Err(HvError::InvalidPartitionId);
         }
@@ -1097,7 +1102,7 @@ impl<T, B: HardwareIsolatedBacking>
             // the higher VTL has not been enabled on any other VP because at that
             // point, the higher VTL should be orchestrating its own enablement.
             if self.intercepted_vtl < GuestVtl::Vtl1 {
-                if vtl1_state.enabled_on_vp_count > 0 || vp_index != current_vp_index {
+                if vtl1_state.enabled_on_any_vp || vp_index != current_vp_index {
                     return Err(HvError::AccessDenied);
                 }
 
@@ -1106,7 +1111,7 @@ impl<T, B: HardwareIsolatedBacking>
                 // If handling on behalf of VTL 1, then some other VP (i.e. the
                 // bsp) must have already handled EnableVpVtl. No partition-wide
                 // state is changing, so no need to hold the lock
-                assert!(vtl1_state.enabled_on_vp_count > 0);
+                assert!(vtl1_state.enabled_on_any_vp);
                 None
             }
         };
@@ -1120,7 +1125,7 @@ impl<T, B: HardwareIsolatedBacking>
             .vtl1_enabled
             .lock();
 
-        if inner_vtl1_state.enabled {
+        if *vtl1_enabled {
             return Err(HvError::VtlAlreadyEnabled);
         }
 
@@ -1153,13 +1158,16 @@ impl<T, B: HardwareIsolatedBacking>
 
         // Cannot fail from here
         if let Some(mut gvsm) = gvsm_state {
-            gvsm.get_hardware_cvm_mut().unwrap().enabled_on_vp_count += 1;
+            // It's valid to only set this when gvsm_state is Some (when VTL 0
+            // was intercepted) only because we assert above that if VTL 1 was
+            // intercepted, some vp has already enabled VTL 1 on it.
+            gvsm.get_hardware_cvm_mut().unwrap().enabled_on_any_vp = true;
         }
 
-        inner_vtl1_state.enabled = true;
+        *vtl1_enabled = true;
 
         let enable_vp_vtl_state = VpStartEnableVtl {
-            is_start: false,
+            operation: InitialVpContextOperation::EnableVpVtl,
             context: *vp_context,
         };
 
@@ -1493,7 +1501,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             tracing::debug!(
                 vp_index = self.inner.cpu_index,
                 ?vtl,
-                "starting vp with initial registers"
+                ?start_enable_vtl_state.operation,
+                "setting up vp with initial registers"
             );
 
             hv1_emulator::hypercall::set_x86_vp_context(
@@ -1502,10 +1511,10 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             )
             .map_err(UhRunVpError::State)?;
 
-            if start_enable_vtl_state.is_start {
+            if let InitialVpContextOperation::StartVp = start_enable_vtl_state.operation {
                 match vtl {
                     GuestVtl::Vtl0 => {
-                        if self.inner.hcvm_vtl1_state.lock().enabled {
+                        if *self.cvm_vp_inner().vtl1_enabled.lock() {
                             // When starting a VP targeting VTL on a
                             // hardware confidential VM, if VTL 1 has been
                             // enabled, switch to it (the highest enabled
@@ -1516,20 +1525,17 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                             // a second+ startvp call for a vp should be
                             // revisited.
                             //
-                            // For other VM types, the hypervisor is
-                            // responsible for running the correct VTL.
-                            //
                             // Furthermore, there is no need to copy the
                             // shared VTL registers if starting the VP on an
                             // already running VP is disallowed. Even if
                             // this was allowed, copying the registers may
                             // not be desirable.
 
-                            B::set_exit_vtl(self, GuestVtl::Vtl1);
+                            self.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl1;
                         }
                     }
                     GuestVtl::Vtl1 => {
-                        B::set_exit_vtl(self, GuestVtl::Vtl1);
+                        self.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl1;
                     }
                 }
             }
@@ -1571,6 +1577,11 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         target_vtl: GuestVtl,
         config: HvRegisterVsmVpSecureVtlConfig,
     ) -> Result<(), HvError> {
+        tracing::debug!(
+            ?requesting_vtl,
+            ?target_vtl,
+            "setting vsm vp secure config vtl"
+        );
         if requesting_vtl <= target_vtl {
             return Err(HvError::AccessDenied);
         }
