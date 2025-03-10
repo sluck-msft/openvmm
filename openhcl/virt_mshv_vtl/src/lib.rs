@@ -325,6 +325,14 @@ impl From<EnterMode> for hcl::protocol::EnterMode {
     }
 }
 
+// #[cfg(guest_arch = "x86_64")]
+// #[derive(Inspect)]
+// pub enum InjectedExceptionSource {
+//     Apic,
+//     Direct,
+//     InterceptedDuringDelivery,
+// }
+
 #[cfg(guest_arch = "x86_64")]
 #[derive(Inspect)]
 /// VP state for CVMs.
@@ -341,6 +349,10 @@ struct UhCvmVpState {
     /// Whether VTL 1 has been enabled on this VP.
     vtl1_enabled: bool,
     vtl1_reg_intercept: SecureRegisterInterceptState,
+    #[inspect(with = "|x| x.map(|e| e.event_type())")]
+    vtl0_pending_exception: Option<hvdef::HvX64PendingExceptionEvent>,
+    // TODO: probably not the right place for this
+    // vtl0_injected_exception_source: Option<InjectedExceptionSource>,s
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -391,6 +403,8 @@ impl UhCvmVpState {
             lapics,
             vtl1_enabled: false,
             vtl1_reg_intercept: Default::default(),
+            vtl0_pending_exception: None,
+            // vtl0_injected_exception_source: None,
         })
     }
 }

@@ -568,7 +568,7 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Activity {
             nmi_pending: false,
             nmi_masked: false,
             interrupt_shadow: false,
-            pending_event: None,
+            pending_event: None, // What is this pending event, is it the same?
             pending_interruption: None,
         }
     }

@@ -47,6 +47,8 @@ use hv1_structs::VtlArray;
 use hvdef::HvError;
 use hvdef::HvMessage;
 use hvdef::HvSynicSint;
+use hvdef::HvX64PendingEvent;
+use hvdef::HvX64PendingInterruptionRegister;
 use hvdef::NUM_SINTS;
 use hvdef::Vtl;
 use hvdef::hypercall::HostVisibilityType;
@@ -288,6 +290,18 @@ trait HardwareIsolatedBacking: Backing {
     fn set_control_register_mask_register(
         this: &mut UhProcessor<'_, Self>,
         mask: ControlRegisterMask,
+    );
+
+    // TODO should these go somewhere else?
+    fn current_pending_interruption(
+        this: &UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+    ) -> Option<HvX64PendingInterruptionRegister>;
+
+    fn inject_pending_interruption(
+        this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        interruption: HvX64PendingInterruptionRegister,
     );
 }
 
@@ -685,6 +699,8 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     } else {
                         [false, false].into()
                     };
+
+                    T::inject_pending_event(self);
 
                     if self.backing.untrusted_synic().is_some() {
                         self.update_synic(GuestVtl::Vtl0, true);

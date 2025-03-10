@@ -554,6 +554,21 @@ impl HardwareIsolatedBacking for TdxBacked {
         // TODO TDX GUEST VSM
         todo!()
     }
+
+    fn current_pending_interruption(
+        _this: &UhProcessor<'_, Self>,
+        _vtl: GuestVtl,
+    ) -> Option<hvdef::HvX64PendingInterruptionRegister> {
+        todo!()
+    }
+
+    fn inject_pending_interruption(
+        _this: &mut UhProcessor<'_, Self>,
+        _vtl: GuestVtl,
+        _interruption: hvdef::HvX64PendingInterruptionRegister,
+    ) {
+        todo!()
+    }
 }
 
 /// Partition-wide shared data for TDX VPs.
@@ -1272,6 +1287,8 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
 impl UhProcessor<'_, TdxBacked> {
     async fn run_vp_tdx(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
         let next_vtl = self.backing.cvm.exit_vtl;
+
+        // TODO TDX GUEST VSM: inject pending event
 
         if self.backing.vtls[next_vtl].interruption_information.valid() {
             tracing::debug!(
