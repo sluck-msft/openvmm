@@ -43,6 +43,7 @@ use hvdef::HvX64PendingExceptionEvent;
 use hvdef::HvX64RegisterName;
 use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
+use hvdef::HV_X64_PENDING_EVENT_EXCEPTION;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
@@ -251,6 +252,74 @@ impl HardwareIsolatedBacking for SnpBacked {
                 this.backing.cvm.vtl1_reg_intercept.ia32_misc_enable_mask = mask;
             }
         }
+    }
+
+    fn current_pending_interruption(
+        this: &UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+    ) -> Option<hvdef::HvX64PendingInterruptionRegister> {
+        let event_inject = this.runner.vmsa(vtl).event_inject();
+        if !event_inject.valid() {
+            return None;
+        }
+
+        // TODO: seems like if we have to rewind interrupts, we don't want to rewind NMIs that we injected?
+
+        Some(
+            hvdef::HvX64PendingInterruptionRegister::new()
+                .with_interruption_pending(true)
+                .with_interruption_vector(event_inject.vector() as u16)
+                .with_deliver_error_code(event_inject.deliver_error_code())
+                .with_error_code(if event_inject.deliver_error_code() {
+                    event_inject.error_code()
+                } else {
+                    0
+                })
+                .with_interruption_type(match event_inject.interruption_type() {
+                    snp::SEV_INTR_TYPE_NMI => {
+                        hvdef::HvX64PendingInterruptionType::HV_X64_PENDING_NMI.0
+                    }
+                    snp::SEV_INTR_TYPE_EXCEPT => {
+                        hvdef::HvX64PendingInterruptionType::HV_X64_PENDING_EXCEPTION.0
+                    }
+                    snp::SEV_INTR_TYPE_SW => {
+                        hvdef::HvX64PendingInterruptionType::HV_X64_PENDING_SOFTWARE_EXCEPTION.0
+                    }
+                    snp::SEV_INTR_TYPE_EXT => {
+                        hvdef::HvX64PendingInterruptionType::HV_X64_PENDING_INTERRUPT.0
+                        // TODO: why?
+                    }
+                    _ => unreachable!(),
+                }),
+        )
+    }
+
+    // TODO: is this the right abstraction, or do we want to inject the exception event?
+    fn inject_pending_interruption(
+        this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        interruption: hvdef::HvX64PendingInterruptionRegister,
+    ) {
+        this.runner.vmsa_mut(vtl).set_event_inject(
+            SevEventInjectInfo::new()
+                .with_valid(true)
+                .with_interruption_type(
+                    match hvdef::HvX64PendingInterruptionType(interruption.interruption_type()) {
+                        hvdef::HvX64PendingInterruptionType::HV_X64_PENDING_EXCEPTION => {
+                            snp::SEV_INTR_TYPE_EXCEPT
+                        }
+                        hvdef::HvX64PendingInterruptionType::HV_X64_PENDING_INTERRUPT => snp::SEV_INTR_TYPE_EXT,
+                        hvdef::HvX64PendingInterruptionType::HV_X64_PENDING_NMI => snp::SEV_INTR_TYPE_NMI,
+                        hvdef::HvX64PendingInterruptionType::HV_X64_PENDING_SOFTWARE_INTERRUPT => snp::SEV_INTR_TYPE_SW,
+                        hvdef::HvX64PendingInterruptionType::HV_X64_PENDING_PRIVILEGED_SOFTWARE_EXCEPTION |
+                        hvdef::HvX64PendingInterruptionType::HV_X64_PENDING_SOFTWARE_EXCEPTION => snp::SEV_INTR_TYPE_EXCEPT,
+                        _ => panic!("Unexpected pending interruption type"),
+                    },
+                )
+                .with_vector(interruption.interruption_vector() as u8)
+                .with_deliver_error_code(interruption.deliver_error_code())
+                .with_error_code(interruption.error_code()),
+        );
     }
 }
 
@@ -472,6 +541,10 @@ impl BackingPrivate for SnpBacked {
             let ppr_priority = ppr >> 4;
             vmsa_priority > ppr_priority
         })
+    }
+
+    fn inject_pending_event(this: &mut UhProcessor<'_, Self>) {
+        this.hcvm_inject_pending_event();
     }
 
     fn inspect_extra(this: &mut UhProcessor<'_, Self>, resp: &mut inspect::Response<'_>) {
@@ -783,6 +856,15 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpB
         // For now, just inject an NMI and hope for the best.
         // Don't forget to update handle_cross_vtl_interrupts if this code changes.
         let mut vmsa = self.runner.vmsa_mut(vtl);
+
+        // Don't inject the NMI if there's already an event pending.
+        if vmsa.event_inject().valid() {
+            // TODO: this is sorta sketchy. It's already marked in the Apic Work
+            // as no nmi pending, we're just relying on the fact that
+            // lapic.nmi_pending will still be true.
+            return Ok(());
+        }
+
         vmsa.set_event_inject(
             SevEventInjectInfo::new()
                 .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_NMI)
@@ -1051,6 +1133,7 @@ impl UhProcessor<'_, SnpBacked> {
         self.unlock_tlb_lock(Vtl::Vtl2);
         let tlb_halt = self.should_halt_for_tlb_unlock(next_vtl);
 
+        // TODO: if there's an event pending, we run it anyway?
         let halt = self.backing.cvm.lapics[next_vtl].activity != MpState::Running || tlb_halt;
 
         if halt && next_vtl == GuestVtl::Vtl1 && !tlb_halt {
@@ -1095,7 +1178,10 @@ impl UhProcessor<'_, SnpBacked> {
                 _ => true,
             };
 
+            // TODO: maybe I can have an enum, saying what state the event_inject field is in? Whether it can be rewound?
+
             if inject {
+                // TODO: set a variable indicating that an event was injected?
                 vmsa.set_event_inject(exit_int_info);
             }
         }

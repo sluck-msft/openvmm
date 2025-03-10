@@ -47,6 +47,8 @@ use hvdef::hypercall::HostVisibilityType;
 use hvdef::HvError;
 use hvdef::HvMessage;
 use hvdef::HvSynicSint;
+use hvdef::HvX64PendingEvent;
+use hvdef::HvX64PendingInterruptionRegister;
 use hvdef::Vtl;
 use hvdef::NUM_SINTS;
 use inspect::Inspect;
@@ -247,6 +249,8 @@ mod private {
             dev: &impl CpuIo,
         ) -> Result<bool, UhRunVpError>;
 
+        fn inject_pending_event(this: &mut UhProcessor<'_, Self>);
+
         fn handle_vp_start_enable_vtl_wake(
             _this: &mut UhProcessor<'_, Self>,
             _vtl: GuestVtl,
@@ -303,6 +307,18 @@ pub trait HardwareIsolatedBacking: Backing {
     fn set_control_register_mask_register(
         this: &mut UhProcessor<'_, Self>,
         mask: ControlRegisterMask,
+    );
+
+    // TODO should these go somewhere else?
+    fn current_pending_interruption(
+        this: &UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+    ) -> Option<HvX64PendingInterruptionRegister>;
+
+    fn inject_pending_interruption(
+        this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        interruption: HvX64PendingInterruptionRegister,
     );
 }
 
@@ -710,6 +726,8 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                 if self.backing.untrusted_synic().is_some() {
                     self.update_synic(GuestVtl::Vtl0, true);
                 }
+
+                T::inject_pending_event(self);
 
                 for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
                     // Process interrupts.
