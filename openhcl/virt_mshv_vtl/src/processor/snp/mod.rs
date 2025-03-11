@@ -19,6 +19,7 @@ use crate::processor::UhProcessor;
 use crate::BackingShared;
 use crate::Error;
 use crate::GuestVtl;
+use crate::InjectedEventSource;
 use crate::TlbFlushLockAccess;
 use crate::UhCvmPartitionState;
 use crate::UhCvmVpState;
@@ -320,6 +321,20 @@ impl HardwareIsolatedBacking for SnpBacked {
                 .with_deliver_error_code(interruption.deliver_error_code())
                 .with_error_code(interruption.error_code()),
         );
+    }
+
+    fn rewind_vtl0_interrupts(this: &mut UhProcessor<'_, Self>) {
+        // Only NMI needs to be rewound for SNP, and only those injected by the APIC can be rewound.
+        if let Some(InjectedEventSource::Apic) = this.backing.cvm.vtl0_injected_event_source {
+            let mut vmsa = this.runner.vmsa_mut(GuestVtl::Vtl0);
+            vmsa.set_event_inject(SevEventInjectInfo::new().with_valid(false));
+
+            // TODO: this will create two sources for NMIs, the ApicWork and the
+            // nmi_pending boolean, which seems wrong.
+            this.backing.cvm.lapics[Vtl::Vtl0].nmi_pending = true;
+
+            // TODO: set the activity state???
+        }
     }
 }
 
@@ -873,6 +888,7 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpB
         );
         self.backing.cvm.lapics[vtl].nmi_pending = false;
         self.backing.cvm.lapics[vtl].activity = MpState::Running;
+        self.backing.cvm.vtl0_injected_event_source = Some(crate::InjectedEventSource::Apic);
         Ok(())
     }
 
@@ -1147,6 +1163,10 @@ impl UhProcessor<'_, SnpBacked> {
         // Set the lazy EOI bit just before running.
         let lazy_eoi = self.sync_lazy_eoi(next_vtl);
 
+        // TODO: this seems wrong. Should this always be cleared, even if we're
+        // exiting back to VTL 1? Is it ok to lose this information?
+        self.backing.cvm_state_mut().vtl0_injected_event_source = None;
+
         let mut has_intercept = self
             .runner
             .run()
@@ -1178,11 +1198,13 @@ impl UhProcessor<'_, SnpBacked> {
                 _ => true,
             };
 
-            // TODO: maybe I can have an enum, saying what state the event_inject field is in? Whether it can be rewound?
-
             if inject {
-                // TODO: set a variable indicating that an event was injected?
                 vmsa.set_event_inject(exit_int_info);
+
+                if entered_from_vtl == GuestVtl::Vtl0 {
+                    self.backing.cvm_state_mut().vtl0_injected_event_source =
+                        Some(crate::InjectedEventSource::InterceptedDuringDelivery);
+                }
             }
         }
         vmsa.v_intr_cntrl_mut().set_guest_busy(true);

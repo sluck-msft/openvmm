@@ -345,6 +345,8 @@ impl BackingPrivate for HypervisorBackedX86 {
         // whether VTL 1 is enabled on the vp (this can be cached).
         false
     }
+
+    fn inject_pending_event(_this: &mut UhProcessor<'_, Self>) {}
 }
 
 fn parse_sidecar_exit(message: &hvdef::HvMessage) -> SidecarRemoveExit {
