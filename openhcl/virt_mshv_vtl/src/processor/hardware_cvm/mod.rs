@@ -1665,6 +1665,14 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
         // TODO: what's the interaction between this and the halt stuff?
         if next_vtl == GuestVtl::Vtl0 {
+            // TODO: do we even need to rewind interrupts if we inject events
+            // first, and avoid injecting interrupts if we inject an event? Yes
+            // because actually we poll apic on every exit, including to VTL 1,
+            // so we may end up injecting an interrupt to VTL 0 before the
+            // pending event is injected into VTL 0 (which can only be when we
+            // actually exit to VTL 0).
+            B::rewind_vtl0_interrupts(self);
+
             // TODO: Steven's refactor has a cvm_state() version, use that
             if let Some(exception) = self.backing.cvm_state_mut().vtl0_pending_exception {
                 self.hcvm_inject_pending_exception(next_vtl, exception);
@@ -1731,6 +1739,12 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         }
 
         B::inject_pending_interruption(self, vtl, interruption);
+
+        // TODO: does it really need to be vtl0-specific?
+        if vtl == GuestVtl::Vtl0 {
+            self.backing.cvm_state_mut().vtl0_injected_event_source =
+                Some(crate::InjectedEventSource::Direct);
+        }
     }
 
     pub(crate) fn hcvm_vtl1_inspectable(&self) -> bool {

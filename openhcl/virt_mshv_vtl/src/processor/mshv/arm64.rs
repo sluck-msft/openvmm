@@ -256,6 +256,8 @@ impl Backing for HypervisorBackedArm64 {
         // whether VTL 1 is enabled on the vp (this can be cached).
         false
     }
+
+    fn inject_pending_event(_this: &mut UhProcessor<'_, Self>) {}
 }
 
 impl UhProcessor<'_, HypervisorBackedArm64> {

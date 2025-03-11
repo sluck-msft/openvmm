@@ -569,6 +569,10 @@ impl HardwareIsolatedBacking for TdxBacked {
     ) {
         todo!()
     }
+
+    fn rewind_vtl0_interrupts(_this: &mut UhProcessor<'_, Self>) {
+        todo!()
+    }
 }
 
 /// Partition-wide shared data for TDX VPs.
@@ -970,6 +974,10 @@ impl Backing for TdxBacked {
 
     fn vtl1_inspectable(this: &UhProcessor<'_, Self>) -> bool {
         this.hcvm_vtl1_inspectable()
+    }
+
+    fn inject_pending_event(this: &mut UhProcessor<'_, Self>) {
+        // TODO TDX Guest VSM
     }
 }
 
