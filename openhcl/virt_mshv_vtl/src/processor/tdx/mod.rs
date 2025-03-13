@@ -555,7 +555,7 @@ impl HardwareIsolatedBacking for TdxBacked {
         todo!()
     }
 
-    fn current_pending_interruption(
+    fn current_pending_event(
         _this: &UhProcessor<'_, Self>,
         _vtl: GuestVtl,
     ) -> Option<hvdef::HvX64PendingInterruptionRegister> {

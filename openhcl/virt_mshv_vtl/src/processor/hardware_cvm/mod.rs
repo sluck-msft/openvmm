@@ -1660,21 +1660,25 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     }
 
     pub(crate) fn hcvm_inject_pending_event(&mut self) {
-        // TODO: use the cvm_state() version
-        let next_vtl = self.backing.cvm_state_mut().exit_vtl;
+        // TODO: get the cvm_state less times
+        let next_vtl = self.backing.cvm_state().exit_vtl;
 
         // TODO: what's the interaction between this and the halt stuff?
         if next_vtl == GuestVtl::Vtl0 {
             // TODO: do we even need to rewind interrupts if we inject events
             // first, and avoid injecting interrupts if we inject an event? Yes
-            // because actually we poll apic on every exit, including to VTL 1,
-            // so we may end up injecting an interrupt to VTL 0 before the
-            // pending event is injected into VTL 0 (which can only be when we
-            // actually exit to VTL 0).
-            B::rewind_vtl0_interrupts(self);
+            // because actually we poll apics for each vtl on every exit,
+            // including exit to VTL 1, so we may end up injecting an interrupt
+            // to VTL 0 before the pending event is injected into VTL 0 (which
+            // can only be when we actually exit to VTL 0).
+            if let Some(crate::InjectedEventSource::Apic) =
+                self.backing.cvm_state().vtl0_injected_event_source
+            {
+                B::rewind_vtl0_interrupts(self);
+            }
 
             // TODO: Steven's refactor has a cvm_state() version, use that
-            if let Some(exception) = self.backing.cvm_state_mut().vtl0_pending_exception {
+            if let Some(exception) = self.backing.cvm_state().vtl0_pending_exception {
                 self.hcvm_inject_pending_exception(next_vtl, exception);
             }
 
@@ -1697,7 +1701,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             // TODO: is this sufficient? The HCL has some extra handling around
             // rewinding NMIs (and not rewinding them if they were in
             // EXTINTINFO)
-            if let Some(current_interrupt) = B::current_pending_interruption(self, vtl) {
+            if let Some(current_interrupt) = B::current_pending_event(self, vtl) {
                 let is_contributory_exception = |exception: Exception| -> bool {
                     matches!(
                         exception,

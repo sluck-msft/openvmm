@@ -16,7 +16,6 @@ use super::vp_state::UhVpStateAccess;
 use crate::BackingShared;
 use crate::Error;
 use crate::GuestVtl;
-use crate::InjectedEventSource;
 use crate::TlbFlushLockAccess;
 use crate::UhCvmPartitionState;
 use crate::UhCvmVpState;
@@ -33,8 +32,6 @@ use hv1_hypercall::HypercallIo;
 use hv1_structs::ProcessorSet;
 use hv1_structs::VtlArray;
 use hvdef::HV_PAGE_SIZE;
-use hvdef::HV_PAGE_SIZE;
-use hvdef::HV_X64_PENDING_EVENT_EXCEPTION;
 use hvdef::HvDeliverabilityNotificationsRegister;
 use hvdef::HvError;
 use hvdef::HvInterceptAccessType;
@@ -49,6 +46,7 @@ use hvdef::hypercall::HypercallOutput;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
+use tracing::event;
 use virt::Processor;
 use virt::VpHaltReason;
 use virt::VpIndex;
@@ -274,7 +272,7 @@ impl HardwareIsolatedBacking for SnpBacked {
         }
     }
 
-    fn current_pending_interruption(
+    fn current_pending_event(
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
     ) -> Option<hvdef::HvX64PendingInterruptionRegister> {
@@ -344,16 +342,15 @@ impl HardwareIsolatedBacking for SnpBacked {
 
     fn rewind_vtl0_interrupts(this: &mut UhProcessor<'_, Self>) {
         // Only NMI needs to be rewound for SNP, and only those injected by the APIC can be rewound.
-        if let Some(InjectedEventSource::Apic) = this.backing.cvm.vtl0_injected_event_source {
-            let mut vmsa = this.runner.vmsa_mut(GuestVtl::Vtl0);
-            vmsa.set_event_inject(SevEventInjectInfo::new().with_valid(false));
 
-            // TODO: this will create two sources for NMIs, the ApicWork and the
-            // nmi_pending boolean, which seems wrong.
-            this.backing.cvm.lapics[Vtl::Vtl0].nmi_pending = true;
+        let mut vmsa = this.runner.vmsa_mut(GuestVtl::Vtl0);
+        vmsa.set_event_inject(SevEventInjectInfo::new().with_valid(false));
 
-            // TODO: set the activity state???
-        }
+        // TODO: this will create two sources for NMIs, the ApicWork and the
+        // nmi_pending boolean, which seems wrong.
+        this.backing.cvm.lapics[Vtl::Vtl0].nmi_pending = true;
+
+        // TODO: set the activity state???
     }
 }
 
@@ -1159,7 +1156,6 @@ impl UhProcessor<'_, SnpBacked> {
         self.unlock_tlb_lock(Vtl::Vtl2);
         let tlb_halt = self.should_halt_for_tlb_unlock(next_vtl);
 
-        // TODO: if there's an event pending, we run it anyway?
         let halt = self.backing.cvm.lapics[next_vtl].activity != MpState::Running || tlb_halt;
 
         if halt && next_vtl == GuestVtl::Vtl1 && !tlb_halt {
@@ -1173,9 +1169,11 @@ impl UhProcessor<'_, SnpBacked> {
         // Set the lazy EOI bit just before running.
         let lazy_eoi = self.sync_lazy_eoi(next_vtl);
 
-        // TODO: this seems wrong. Should this always be cleared, even if we're
-        // exiting back to VTL 1? Is it ok to lose this information?
-        self.backing.cvm_state_mut().vtl0_injected_event_source = None;
+        if next_vtl == GuestVtl::Vtl0 {
+            // TODO: is it ok to lose this information here, if we end up
+            // delivering an interrupt to VTL 1
+            self.backing.cvm_state_mut().vtl0_injected_event_source = None;
+        }
 
         let mut has_intercept = self
             .runner
@@ -1871,6 +1869,8 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
         );
 
         let exception = HvX64PendingExceptionEvent::from(u128::from(event_info.reg_0));
+
+        // TODO: this should combine with whatever is already in the VMSA
 
         self.vp.runner.vmsa_mut(self.vtl).set_event_inject(
             SevEventInjectInfo::new()

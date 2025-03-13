@@ -233,6 +233,8 @@ pub trait Backing: 'static + Sized + InspectMut + Sized {
         dev: &impl CpuIo,
     ) -> Result<bool, UhRunVpError>;
 
+    fn inject_pending_event(this: &mut UhProcessor<'_, Self>);
+
     fn handle_vp_start_enable_vtl_wake(
         _this: &mut UhProcessor<'_, Self>,
         _vtl: GuestVtl,
@@ -292,8 +294,9 @@ trait HardwareIsolatedBacking: Backing {
         mask: ControlRegisterMask,
     );
 
-    // TODO should these go somewhere else?
-    fn current_pending_interruption(
+    // TODO should these go somewhere else? Also review if this is the correct
+    // API breakdown.
+    fn current_pending_event(
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
     ) -> Option<HvX64PendingInterruptionRegister>;
@@ -703,6 +706,10 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     };
 
                     T::inject_pending_event(self);
+
+                    // TODO GUEST VSM: if there's an event pending, clear any
+                    // halts or idles, etc (exception is TLB lock) and exit to
+                    // the guest
 
                     if self.backing.untrusted_synic().is_some() {
                         self.update_synic(GuestVtl::Vtl0, true);
