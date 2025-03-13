@@ -354,6 +354,7 @@ pub struct UhCvmVpState {
     /// LAPIC state.
     lapics: VtlArray<LapicState, 2>,
     vtl1_reg_intercept: SecureRegisterInterceptState,
+    // TODO: probably not the right place for this
     #[inspect(with = "|x| x.map(|e| e.event_type())")]
     vtl0_pending_exception: Option<hvdef::HvX64PendingExceptionEvent>,
     // TODO: probably not the right place for this

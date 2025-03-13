@@ -1691,11 +1691,15 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         if next_vtl == GuestVtl::Vtl0 {
             // TODO: do we even need to rewind interrupts if we inject events
             // first, and avoid injecting interrupts if we inject an event? Yes
-            // because actually we poll apic on every exit, including to VTL 1,
-            // so we may end up injecting an interrupt to VTL 0 before the
-            // pending event is injected into VTL 0 (which can only be when we
-            // actually exit to VTL 0).
-            B::rewind_vtl0_interrupts(self);
+            // because actually we poll apics for each vtl on every exit,
+            // including exit to VTL 1, so we may end up injecting an interrupt
+            // to VTL 0 before the pending event is injected into VTL 0 (which
+            // can only be when we actually exit to VTL 0).
+            if let Some(crate::InjectedEventSource::Apic) =
+                self.backing.cvm_state_mut().vtl0_injected_event_source
+            {
+                B::rewind_vtl0_interrupts(self);
+            }
 
             // TODO: Steven's refactor has a cvm_state() version, use that
             if let Some(exception) = self.backing.cvm_state_mut().vtl0_pending_exception {

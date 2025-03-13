@@ -309,7 +309,8 @@ pub trait HardwareIsolatedBacking: Backing {
         mask: ControlRegisterMask,
     );
 
-    // TODO should these go somewhere else?
+    // TODO should these go somewhere else? Also review if this is the correct
+    // API breakdown.
     fn current_pending_interruption(
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
@@ -729,6 +730,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     self.update_synic(GuestVtl::Vtl0, true);
                 }
 
+                
                 T::inject_pending_event(self);
 
                 for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
