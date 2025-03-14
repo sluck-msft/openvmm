@@ -46,7 +46,6 @@ use hvdef::hypercall::HypercallOutput;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
-use tracing::event;
 use virt::Processor;
 use virt::VpHaltReason;
 use virt::VpIndex;
@@ -281,8 +280,6 @@ impl HardwareIsolatedBacking for SnpBacked {
             return None;
         }
 
-        // TODO: seems like if we have to rewind interrupts, we don't want to rewind NMIs that we injected?
-
         Some(
             hvdef::HvX64PendingInterruptionRegister::new()
                 .with_interruption_pending(true)
@@ -338,19 +335,6 @@ impl HardwareIsolatedBacking for SnpBacked {
                 .with_deliver_error_code(interruption.deliver_error_code())
                 .with_error_code(interruption.error_code()),
         );
-    }
-
-    fn rewind_vtl0_interrupts(this: &mut UhProcessor<'_, Self>) {
-        // Only NMI needs to be rewound for SNP, and only those injected by the APIC can be rewound.
-
-        let mut vmsa = this.runner.vmsa_mut(GuestVtl::Vtl0);
-        vmsa.set_event_inject(SevEventInjectInfo::new().with_valid(false));
-
-        // TODO: this will create two sources for NMIs, the ApicWork and the
-        // nmi_pending boolean, which seems wrong.
-        this.backing.cvm.lapics[Vtl::Vtl0].nmi_pending = true;
-
-        // TODO: set the activity state???
     }
 }
 
@@ -879,13 +863,8 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpB
         // Don't forget to update handle_cross_vtl_interrupts if this code changes.
         let mut vmsa = self.runner.vmsa_mut(vtl);
 
-        // Don't inject the NMI if there's already an event pending.
-        if vmsa.event_inject().valid() {
-            // TODO: this is sorta sketchy. It's already marked in the Apic Work
-            // as no nmi pending, we're just relying on the fact that
-            // lapic.nmi_pending will still be true.
-            return Ok(());
-        }
+        // TODO GUEST VSM: Don't inject the NMI if there's already an event
+        // pending.
 
         vmsa.set_event_inject(
             SevEventInjectInfo::new()
@@ -895,7 +874,6 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpB
         );
         self.backing.cvm.lapics[vtl].nmi_pending = false;
         self.backing.cvm.lapics[vtl].activity = MpState::Running;
-        self.backing.cvm.vtl0_injected_event_source = Some(crate::InjectedEventSource::Apic);
         Ok(())
     }
 
@@ -1169,12 +1147,6 @@ impl UhProcessor<'_, SnpBacked> {
         // Set the lazy EOI bit just before running.
         let lazy_eoi = self.sync_lazy_eoi(next_vtl);
 
-        if next_vtl == GuestVtl::Vtl0 {
-            // TODO: is it ok to lose this information here, if we end up
-            // delivering an interrupt to VTL 1
-            self.backing.cvm_state_mut().vtl0_injected_event_source = None;
-        }
-
         let mut has_intercept = self
             .runner
             .run()
@@ -1208,11 +1180,6 @@ impl UhProcessor<'_, SnpBacked> {
 
             if inject {
                 vmsa.set_event_inject(exit_int_info);
-
-                if entered_from_vtl == GuestVtl::Vtl0 {
-                    self.backing.cvm_state_mut().vtl0_injected_event_source =
-                        Some(crate::InjectedEventSource::InterceptedDuringDelivery);
-                }
             }
         }
         vmsa.v_intr_cntrl_mut().set_guest_busy(true);

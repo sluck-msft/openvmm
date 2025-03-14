@@ -1663,19 +1663,13 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         // TODO: get the cvm_state less times
         let next_vtl = self.backing.cvm_state().exit_vtl;
 
-        // TODO: what's the interaction between this and the halt stuff?
         if next_vtl == GuestVtl::Vtl0 {
-            // TODO: do we even need to rewind interrupts if we inject events
-            // first, and avoid injecting interrupts if we inject an event? Yes
-            // because actually we poll apics for each vtl on every exit,
-            // including exit to VTL 1, so we may end up injecting an interrupt
-            // to VTL 0 before the pending event is injected into VTL 0 (which
-            // can only be when we actually exit to VTL 0).
-            if let Some(crate::InjectedEventSource::Apic) =
-                self.backing.cvm_state().vtl0_injected_event_source
-            {
-                B::rewind_vtl0_interrupts(self);
-            }
+            // TODO GUEST VSM: rewind interrupts injected by the apic. This
+            // might mean keeping track of whether an event was injected by the
+            // apic, injected directly (as a result of emulation or in response
+            // to the pending event register being set), or e.g. in the case of
+            // SNP, if it came in through EXTINTINFO. The latter two should not
+            // be rewound.
 
             // TODO: Steven's refactor has a cvm_state() version, use that
             if let Some(exception) = self.backing.cvm_state().vtl0_pending_exception {
@@ -1698,9 +1692,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             );
 
         let double_fault = {
-            // TODO: is this sufficient? The HCL has some extra handling around
-            // rewinding NMIs (and not rewinding them if they were in
-            // EXTINTINFO)
             if let Some(current_interrupt) = B::current_pending_event(self, vtl) {
                 let is_contributory_exception = |exception: Exception| -> bool {
                     matches!(
@@ -1743,12 +1734,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         }
 
         B::inject_pending_interruption(self, vtl, interruption);
-
-        // TODO: does it really need to be vtl0-specific?
-        if vtl == GuestVtl::Vtl0 {
-            self.backing.cvm_state_mut().vtl0_injected_event_source =
-                Some(crate::InjectedEventSource::Direct);
-        }
     }
 
     pub(crate) fn hcvm_vtl1_inspectable(&self) -> bool {

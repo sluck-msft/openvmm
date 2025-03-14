@@ -306,8 +306,6 @@ trait HardwareIsolatedBacking: Backing {
         vtl: GuestVtl,
         interruption: HvX64PendingInterruptionRegister,
     );
-
-    fn rewind_vtl0_interrupts(this: &mut UhProcessor<'_, Self>);
 }
 
 pub enum ControlRegisterMask {

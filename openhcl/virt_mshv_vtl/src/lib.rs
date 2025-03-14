@@ -327,14 +327,6 @@ impl From<EnterMode> for hcl::protocol::EnterMode {
 
 #[cfg(guest_arch = "x86_64")]
 #[derive(Inspect)]
-pub enum InjectedEventSource {
-    Apic,
-    Direct,
-    InterceptedDuringDelivery,
-}
-
-#[cfg(guest_arch = "x86_64")]
-#[derive(Inspect)]
 /// VP state for CVMs.
 struct UhCvmVpState {
     // Allocation handle for direct overlays
@@ -349,11 +341,14 @@ struct UhCvmVpState {
     /// Whether VTL 1 has been enabled on this VP.
     vtl1_enabled: bool,
     vtl1_reg_intercept: SecureRegisterInterceptState,
-    // TODO: probably not the right place for this
+    /// The pending event that VTL 1 wants to inject into VTL 0. Injected on
+    /// next exit to VTL 0.
+    // Note to self: want this separate from the pending event on the activity
+    // b/c this is really about the pending event that VTL 1 is injecting and
+    // that we want to inject right before exit, not what's currently in the
+    // VMSA
     #[inspect(with = "|x| x.map(|e| e.event_type())")]
     vtl0_pending_exception: Option<hvdef::HvX64PendingExceptionEvent>,
-    // TODO: probably not the right place for this
-    vtl0_injected_event_source: Option<InjectedEventSource>,
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -376,9 +371,8 @@ impl UhCvmVpState {
         let lapics = VtlArray::from_fn(|vtl| {
             let apic_set = &cvm_partition.lapic[vtl];
 
-            // The APIC is software-enabled after reset for
-            // secure VTLs, to maintain compatibility with released versions of secure
-            // kernel
+            // The APIC is software-enabled after reset for secure VTLs, to
+            // maintain compatibility with released versions of secure kernel
             let mut lapic = apic_set.add_apic(vp_info, vtl == Vtl::Vtl1);
             // Initialize APIC base to match the reset VM state.
             lapic.set_apic_base(apic_base).unwrap();
@@ -405,7 +399,6 @@ impl UhCvmVpState {
             vtl1_enabled: false,
             vtl1_reg_intercept: Default::default(),
             vtl0_pending_exception: None,
-            vtl0_injected_event_source: None,
         })
     }
 }
