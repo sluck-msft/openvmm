@@ -130,11 +130,29 @@ pub struct GuestMemoryMapping {
     iova_offset: Option<u64>,
     #[inspect(with = "Option::is_some")]
     valid_memory: Option<Arc<GuestValidMemory>>,
+    #[inspect(skip)]
+    access_bitmap_lock: Mutex<()>,
+    #[inspect(with = "Option::is_some")]
+    access_permission_bitmaps: Option<AccessPermissionBitmaps>,
+    // #[inspect(with = "Option::is_some")]
+    // write_bitmap: Option<SparseMapping>,
+    // #[inspect(with = "Option::is_some")]
+    // kernel_execute_bitmap: Option<SparseMapping>,
+    // #[inspect(with = "Option::is_some")]
+    // user_execute_bitmap: Option<SparseMapping>,
     registrar: Option<MemoryRegistrar<MshvVtlWithPolicy>>,
 }
 
 /// Bitmap implementation using sparse mapping that can be used to track page
 /// states.
+#[derive(Debug)]
+struct AccessPermissionBitmaps {
+    read_bitmap: GuestMemoryBitmap,
+    write_bitmap: GuestMemoryBitmap,
+    kernel_execute_bitmap: GuestMemoryBitmap,
+    user_execute_bitmap: GuestMemoryBitmap,
+}
+
 #[derive(Debug)]
 struct GuestMemoryBitmap {
     bitmap: SparseMapping,
@@ -240,6 +258,7 @@ pub enum MappingError {
 pub struct GuestMemoryMappingBuilder {
     physical_address_base: u64,
     valid_memory: Option<Arc<GuestValidMemory>>,
+    access_permissions_bitmap_state: Option<bool>,
     shared: bool,
     for_kernel_access: bool,
     dma_base_address: Option<u64>,
@@ -358,6 +377,28 @@ impl GuestMemoryMappingBuilder {
 
         tracing::trace!(?mapping, "map_lower_vtl_memory mapping");
 
+        let mut access_permission_bitmaps = if self.access_permissions_bitmap_state.is_some() {
+            Some(AccessPermissionBitmaps {
+                read_bitmap: GuestMemoryBitmap::new(address_space_size as usize)?,
+                write_bitmap: GuestMemoryBitmap::new(address_space_size as usize)?,
+                kernel_execute_bitmap: GuestMemoryBitmap::new(address_space_size as usize)?,
+                user_execute_bitmap: GuestMemoryBitmap::new(address_space_size as usize)?,
+            })
+        } else {
+            None
+        };
+
+        // let access_bitmap = if self.access_bitmap_state.is_some() {
+        //     let bitmap = SparseMapping::new((address_space_size as usize / PAGE_SIZE).div_ceil(8))
+        //         .map_err(MappingError::BitmapReserve)?;
+        //     bitmap
+        //         .map_zero(0, bitmap.len())
+        //         .map_err(MappingError::BitmapMap)?;
+        //     Some(bitmap)
+        // } else {
+        //     None
+        // };
+
         // Loop through each of the memory map entries and create a mapping for it.
         for entry in memory_layout.ram() {
             if entry.range.is_empty() {
@@ -377,6 +418,43 @@ impl GuestMemoryMappingBuilder {
                     true,
                 )
                 .map_err(MappingError::Map)?;
+
+            if let Some((bitmap, state)) = access_bitmap.as_mut().zip(self.access_bitmap_state) {
+                bitmap.init(entry.range, state)?
+            }
+
+            if let Some((bitmaps, state)) = access_permission_bitmaps
+                .as_mut()
+                .zip(self.access_permissions_bitmap_state)
+            {
+                bitmaps.read_bitmap.init(entry.range, state)?;
+                bitmaps.write_bitmap.init(entry.range, state)?;
+                bitmaps.kernel_execute_bitmap.init(entry.range, state)?;
+                bitmaps.user_execute_bitmap.init(entry.range, state)?;
+            }
+
+            // if let Some(bitmap) = &access_bitmap {
+            //     // To simplify bitmap implementation, require that all memory
+            //     // regions be 8-page aligned. Relax this if necessary.
+            //     if entry.range.start() % (PAGE_SIZE as u64 * 8) != 0
+            //         || entry.range.end() % (PAGE_SIZE as u64 * 8) != 0
+            //     {
+            //         return Err(MappingError::BadAlignment(entry.range));
+            //     }
+
+            //     let bitmap_start = entry.range.start() as usize / PAGE_SIZE / 8;
+            //     let bitmap_end = (entry.range.end() - 1) as usize / PAGE_SIZE / 8;
+            //     let bitmap_page_start = bitmap_start / PAGE_SIZE;
+            //     let bitmap_page_end = bitmap_end / PAGE_SIZE;
+            //     let page_count = bitmap_page_end + 1 - bitmap_page_start;
+
+            //     // TODO SNP: map some pre-reserved lower VTL memory into the
+            //     // bitmap. Or just figure out how to hot add that memory to the
+            //     // kernel. Or have the boot loader reserve it at boot time.
+            //     bitmap
+            //         .alloc(bitmap_page_start * PAGE_SIZE, page_count * PAGE_SIZE)
+            //         .map_err(MappingError::BitmapAlloc)?;
+            // }
 
             tracing::trace!(?entry, "mapped memory map entry");
         }
@@ -401,6 +479,8 @@ impl GuestMemoryMappingBuilder {
             mapping,
             iova_offset: self.dma_base_address,
             valid_memory: self.valid_memory.clone(),
+            access_bitmap_lock: Default::default(),
+            access_permission_bitmaps,
             registrar,
         })
     }
@@ -416,6 +496,7 @@ impl GuestMemoryMapping {
         GuestMemoryMappingBuilder {
             physical_address_base,
             valid_memory: None,
+            access_permissions_bitmap_state: None,
             shared: false,
             for_kernel_access: false,
             dma_base_address: None,
