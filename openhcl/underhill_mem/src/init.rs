@@ -206,6 +206,10 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
         // Create the encrypted mapping with just the lower VTL memory.
         //
+        // Start by giving VTL 0 full access to all lower-vtl memory. TODO GUEST
+        // VSM: with lazy acceptance, it should instead be initialized to no
+        // access.
+        //
         // Do not register this mapping with the kernel. It will not be safe for
         // use with syscalls that expect virtual addresses to be in
         // kernel-registered RAM.
@@ -221,9 +225,25 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             let _span = tracing::info_span!("map_vtl0_memory", CVM_ALLOWED).entered();
             GuestMemoryMapping::builder(0)
                 .dma_base_address(None)
+                .use_access_permissions_bitmap(Some(true))
                 .build_with_bitmap(&gpa_fd, &encrypted_memory_view)
                 .context("failed to map vtl0 memory")?
         });
+
+        // TODO: check if the max_vtl is correct here?
+        let vtl1_mapping = if params.maximum_vtl >= Vtl::Vtl1 {
+            tracing::debug!("Building VTL1 memory map");
+            Some(Arc::new({
+                let _span = tracing::info_span!("map_vtl1_memory").entered();
+                GuestMemoryMapping::builder(0)
+                    .dma_base_address(None) // prohibit direct DMA attempts until TDISP is supported
+                    .use_bitmap(Some(true))
+                    .build(&gpa_fd, params.mem_layout)
+                    .context("failed to map vtl0 memory")?
+            }))
+        } else {
+            None
+        };
 
         // Create the shared mapping with the complete memory map, to include
         // the shared pool. This memory is not private to VTL2 and is expected
@@ -288,7 +308,9 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         // confused about shared memory, and our current use of kernel-mode
         // guest memory access is limited to low-perf paths where we can use
         // bounce buffering.
-
+        //
+        // No need to use the access permissions bitmaps--the host cannot have
+        // greater access to the pages than VTL 0.
         tracing::debug!("Building shared memory map");
 
         let shared_memory_view = {
@@ -326,11 +348,19 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
         tracing::debug!("Creating VTL1 guest memory");
         let vtl1_gm = if params.maximum_vtl >= Vtl::Vtl1 {
-            // TODO CVM GUEST VSM: This should not just use the vtl0_gm. This
-            // could also be further tightened -- whether or not VTL 1 is
-            // exposed to the guest is actually determined later, using
-            // additional information.
-            Some(vtl0_gm.clone())
+            tracing::debug!("Creating VTL1 guest memory");
+            // TODO: does this even make sense? esp the part about reusing the shared mapping...
+            Some(
+                GuestMemory::new_multi_region(
+                    "vtl1",
+                    vtom,
+                    vec![
+                        Some(vtl1_mapping.as_ref().unwrap().clone()),
+                        Some(shared_mapping.clone()),
+                    ],
+                )
+                .context("failed to make vtl1 guest memory")?,
+            )
         } else {
             None
         };
@@ -376,7 +406,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
         MemoryMappings {
             vtl0: vtl0_mapping,
-            vtl1: None,
+            vtl1: vtl1_mapping,
             vtl0_gm,
             vtl1_gm,
             cvm_memory: Some(CvmMemory {

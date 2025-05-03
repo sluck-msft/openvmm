@@ -276,6 +276,17 @@ impl GuestMemoryMappingBuilder {
         self
     }
 
+    /// Set whether to allocate a tracking for memory access permissions, and
+    /// specify the initial state of the bitmaps.
+    ///
+    /// This is used to support tracking the read/write/kernel execute/user
+    /// execute permissions of each page.
+
+    pub fn use_access_permissions_bitmap(&mut self, initial_state: Option<bool>) -> &mut Self {
+        self.access_permissions_bitmap_state = initial_state;
+        self
+    }
+
     /// Set whether this is a mapping to access shared memory.
     pub fn shared(&mut self, is_shared: bool) -> &mut Self {
         self.shared = is_shared;
@@ -547,8 +558,38 @@ unsafe impl GuestMemoryAccess for GuestMemoryMapping {
     }
 
     fn access_bitmap(&self) -> Option<guestmem::BitmapInfo> {
-        self.valid_memory
-            .as_ref()
-            .map(|bitmap| bitmap.access_bitmap())
+        // When the permissions bitmaps are available, they take preference and
+        // therefore should be no more permissive than the access bitmap.
+        if let Some(bitmaps) = self.access_permission_bitmaps.as_ref() {
+            Some(guestmem::BitmapInfo {
+                read_bitmap: NonNull::new(bitmaps.read_bitmap.as_sparse_mapping().as_ptr().cast())
+                    .unwrap(),
+                write_bitmap: NonNull::new(
+                    bitmaps.write_bitmap.as_sparse_mapping().as_ptr().cast(),
+                )
+                .unwrap(),
+                kernel_execute_bitmap: NonNull::new(
+                    bitmaps
+                        .kernel_execute_bitmap
+                        .as_sparse_mapping()
+                        .as_ptr()
+                        .cast(),
+                )
+                .unwrap(),
+                user_execute_bitmap: NonNull::new(
+                    bitmaps
+                        .user_execute_bitmap
+                        .as_sparse_mapping()
+                        .as_ptr()
+                        .cast(),
+                )
+                .unwrap(),
+                bit_offset: 0,
+            })
+        } else {
+            self.valid_memory
+                .as_ref()
+                .map(|bitmap| bitmap.access_bitmap())
+        }
     }
 }

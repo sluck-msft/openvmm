@@ -642,8 +642,10 @@ pub struct BitmapInfo {
     pub read_bitmap: NonNull<u8>,
     /// A pointer to the bitmap for write access.
     pub write_bitmap: NonNull<u8>,
-    /// A pointer to the bitmap for execute access.
-    pub execute_bitmap: NonNull<u8>,
+    /// A pointer to the bitmap for kernel execute access.
+    pub kernel_execute_bitmap: NonNull<u8>,
+    /// A pointer to the bitmap for user execute access.
+    pub user_execute_bitmap: NonNull<u8>,
     /// The bit offset of the beginning of the bitmap.
     ///
     /// Typically this is zero, but it is needed to support subranges that are
@@ -785,7 +787,12 @@ unsafe impl GuestMemoryAccess for GuestMemoryAccessRange {
         region.bitmaps.map(|bitmaps| {
             let offset = self.offset & self.base.region_def.region_mask;
             let bit_offset = region.bitmap_start as u64 + offset / PAGE_SIZE64;
-            let [read_bitmap, write_bitmap, execute_bitmap] = bitmaps.map(|SendPtrU8(ptr)| {
+            let [
+                read_bitmap,
+                write_bitmap,
+                kernel_execute_bitmap,
+                user_execute_bitmap,
+            ] = bitmaps.map(|SendPtrU8(ptr)| {
                 // SAFETY: the bitmap is guaranteed to be big enough for the region
                 // by construction.
                 NonNull::new(unsafe { ptr.as_ptr().add((bit_offset / 8) as usize) }).unwrap()
@@ -794,7 +801,8 @@ unsafe impl GuestMemoryAccess for GuestMemoryAccessRange {
             BitmapInfo {
                 read_bitmap,
                 write_bitmap,
-                execute_bitmap,
+                kernel_execute_bitmap,
+                user_execute_bitmap,
                 bit_offset: bitmap_start,
             }
         })
@@ -1031,7 +1039,7 @@ impl<T: ?Sized> Debug for GuestMemoryInner<T> {
 struct MemoryRegion {
     mapping: Option<SendPtrU8>,
     #[cfg(feature = "bitmap")]
-    bitmaps: Option<[SendPtrU8; 3]>,
+    bitmaps: Option<[SendPtrU8; 4]>,
     #[cfg(feature = "bitmap")]
     bitmap_start: u8,
     len: u64,
@@ -1044,7 +1052,8 @@ enum AccessType {
     Read = 0,
     Write = 1,
     // FUTURE: add method to read for execute permission.
-    _Execute = 2,
+    _KernelExecute = 2,
+    _UserExecute = 3,
 }
 
 /// `NonNull<u8>` that implements `Send+Sync`.
@@ -1069,18 +1078,16 @@ unsafe impl Sync for SendPtrU8 {}
 impl MemoryRegion {
     fn new(imp: &impl GuestMemoryAccess) -> Self {
         #[cfg(feature = "bitmap")]
-        let (bitmaps, bitmap_start) = {
-            let bitmap_info = imp.access_bitmap();
-            let bitmaps = bitmap_info.as_ref().map(|bm| {
-                [
-                    SendPtrU8(bm.read_bitmap),
-                    SendPtrU8(bm.write_bitmap),
-                    SendPtrU8(bm.execute_bitmap),
-                ]
-            });
-            let bitmap_start = bitmap_info.map_or(0, |bi| bi.bit_offset);
-            (bitmaps, bitmap_start)
-        };
+        let bitmap_info = imp.access_bitmap();
+        let bitmaps = bitmap_info.as_ref().map(|bm| {
+            [
+                SendPtrU8(bm.read_bitmap),
+                SendPtrU8(bm.write_bitmap),
+                SendPtrU8(bm.kernel_execute_bitmap),
+                SendPtrU8(bm.user_execute_bitmap),
+            ]
+        });
+        let bitmap_start = bitmap_info.map_or(0, |bi| bi.bit_offset);
         Self {
             mapping: imp.mapping().map(SendPtrU8),
             #[cfg(feature = "bitmap")]
@@ -2484,7 +2491,8 @@ mod tests {
             self.bitmap.as_ref().map(|bm| crate::BitmapInfo {
                 read_bitmap: NonNull::new(bm.as_ptr().cast_mut()).unwrap(),
                 write_bitmap: NonNull::new(bm.as_ptr().cast_mut()).unwrap(),
-                execute_bitmap: NonNull::new(bm.as_ptr().cast_mut()).unwrap(),
+                kernel_execute_bitmap: NonNull::new(bm.as_ptr().cast_mut()).unwrap(),
+                user_execute_bitmap: NonNull::new(bm.as_ptr().cast_mut()).unwrap(),
                 bit_offset: 0,
             })
         }
