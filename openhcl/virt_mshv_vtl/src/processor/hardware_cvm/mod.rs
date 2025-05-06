@@ -1166,11 +1166,11 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::ModifyVtlProtectionMask
             return Err((HvError::InvalidRegisterValue, 0));
         }
 
-        // The contract for VSM is that the VTL protections describe what
-        // the lower VTLs are allowed to access. Hardware CVMs set the
-        // protections on the VTL itself. Therefore, for a hardware CVM,
-        // given that only VTL 1 can set the protections, the default
-        // permissions should be changed for VTL 0.
+        // The contract for VSM is that the VTL protections describe what the
+        // lower VTLs are allowed to access. Hardware CVMs set the protections
+        // on the VTL itself. Therefore, for a hardware CVM, given that only VTL
+        // 1 can set the protections, the permissions should be changed for VTL
+        // 0.
         protector.change_vtl_protections(
             GuestVtl::Vtl0,
             gpa_pages,
