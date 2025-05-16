@@ -802,7 +802,12 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::ModifySparseGpaPageHos
         self.vp
             .cvm_partition()
             .isolated_memory_protector
-            .change_host_visibility(shared, gpa_pages, &mut self.vp.tlb_flush_lock_access())
+            .change_host_visibility(
+                self.intercepted_vtl,
+                shared,
+                gpa_pages,
+                &mut self.vp.tlb_flush_lock_access(),
+            )
     }
 }
 
@@ -1715,6 +1720,13 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             if protections != current_protections {
                 return Err(HvError::InvalidRegisterValue);
             }
+        }
+
+        // TODO GUEST VSM: currently don't have a good way of supporting no
+        // enforcement of vtl 1 protections, as the related guest memory objects
+        // are initialized before this call.
+        if !value.enable_vtl_protection() {
+            return Err(HvError::InvalidRegisterValue);
         }
 
         protector.change_default_vtl_protections(

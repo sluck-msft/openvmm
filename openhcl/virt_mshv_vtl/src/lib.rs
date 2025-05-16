@@ -1379,6 +1379,7 @@ pub trait ProtectIsolatedMemory: Send + Sync {
     /// Changes host visibility on guest memory.
     fn change_host_visibility(
         &self,
+        vtl: GuestVtl,
         shared: bool,
         gpns: &[u64],
         tlb_access: &mut dyn TlbFlushLockAccess,

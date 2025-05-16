@@ -117,7 +117,8 @@ impl GuestValidMemory {
         guestmem::BitmapInfo {
             read_bitmap: ptr,
             write_bitmap: ptr,
-            execute_bitmap: ptr,
+            kernel_execute_bitmap: ptr,
+            user_execute_bitmap: ptr,
             bit_offset: 0,
         }
     }
@@ -131,8 +132,8 @@ pub struct GuestMemoryMapping {
     iova_offset: Option<u64>,
     #[inspect(with = "Option::is_some")]
     valid_memory: Option<Arc<GuestValidMemory>>,
-    #[inspect(skip)]
-    access_bitmap_lock: Mutex<()>,
+    // #[inspect(skip)]
+    // access_bitmap_lock: Mutex<()>,
     #[inspect(with = "Option::is_some")]
     access_permission_bitmaps: Option<AccessPermissionBitmaps>,
     #[inspect(skip)]
@@ -235,32 +236,6 @@ impl GuestMemoryBitmap {
 
     fn as_ptr(&self) -> *mut u8 {
         self.bitmap.as_ptr().cast()
-    }
-
-    fn update(&self, range: MemoryRange, state: bool) {
-        for gpn in range.start() / PAGE_SIZE as u64..range.end() / PAGE_SIZE as u64 {
-            // TODO: use `fill_at` for the aligned part of the range.
-            let mut b = 0;
-            self.bitmap
-                .read_at(gpn as usize / 8, std::slice::from_mut(&mut b))
-                .unwrap();
-            if state {
-                b |= 1 << (gpn % 8);
-            } else {
-                b &= !(1 << (gpn % 8));
-            }
-            self.bitmap
-                .write_at(gpn as usize / 8, std::slice::from_ref(&b))
-                .unwrap();
-        }
-    }
-
-    fn get_page_state(&self, gpn: u64) -> bool {
-        let mut b = 0;
-        self.bitmap
-            .read_at(gpn as usize / 8, std::slice::from_mut(&mut b))
-            .unwrap();
-        b & (1 << (gpn % 8)) != 0
     }
 }
 
@@ -459,10 +434,6 @@ impl GuestMemoryMappingBuilder {
                 )
                 .map_err(MappingError::Map)?;
 
-            if let Some((bitmap, state)) = access_bitmap.as_mut().zip(self.access_bitmap_state) {
-                bitmap.init(entry.range, state)?
-            }
-
             if let Some((bitmaps, state)) = access_permission_bitmaps
                 .as_mut()
                 .zip(self.access_permissions_bitmap_state)
@@ -519,7 +490,7 @@ impl GuestMemoryMappingBuilder {
             mapping,
             iova_offset: self.dma_base_address,
             valid_memory: self.valid_memory.clone(),
-            access_bitmap_lock: Default::default(),
+            // access_bitmap_lock: Default::default(),
             access_permission_bitmaps,
             access_permission_bitmaps_lock: Default::default(),
             registrar,
@@ -545,29 +516,32 @@ impl GuestMemoryMapping {
         }
     }
 
+    // TODO: use the bitmap cfg macro
     /// Panics if the range is outside of guest RAM.
     pub fn update_access_permission_bitmaps(&self, range: MemoryRange, flags: HvMapGpaFlags) {
-        let _lock = self.access_permission_bitmaps_lock.lock();
-        // TODO: check if copying straight from kernel/user executable is correct
-        let bitmaps = self.access_permission_bitmaps.as_ref().unwrap();
-        bitmaps.read_bitmap.update(range, flags.readable());
-        bitmaps.write_bitmap.update(range, flags.writable());
-        bitmaps
-            .kernel_execute_bitmap
-            .update(range, flags.kernel_executable());
-        bitmaps
-            .user_execute_bitmap
-            .update(range, flags.user_executable());
+        if let Some(bitmaps) = self.access_permission_bitmaps.as_ref() {
+            let _lock = self.access_permission_bitmaps_lock.lock();
+            // TODO GUEST VSM: synchronize bitmaps
+            // let bitmaps = self.access_permission_bitmaps.as_ref().unwrap();
+            bitmaps.read_bitmap.update(range, flags.readable());
+            bitmaps.write_bitmap.update(range, flags.writable());
+            bitmaps
+                .kernel_execute_bitmap
+                .update(range, flags.kernel_executable());
+            bitmaps
+                .user_execute_bitmap
+                .update(range, flags.user_executable());
+        }
     }
 
     /// Panics if the range is outside of guest RAM.
     pub fn query_access_permission(&self, gpn: u64) -> HvMapGpaFlags {
         let bitmaps = self.access_permission_bitmaps.as_ref().unwrap();
         HvMapGpaFlags::new()
-            .with_readable(bitmaps.read_bitmap.get_page_state(gpn))
-            .with_writable(bitmaps.write_bitmap.get_page_state(gpn))
-            .with_kernel_executable(bitmaps.kernel_execute_bitmap.get_page_state(gpn))
-            .with_user_executable(bitmaps.user_execute_bitmap.get_page_state(gpn))
+            .with_readable(bitmaps.read_bitmap.page_state(gpn))
+            .with_writable(bitmaps.write_bitmap.page_state(gpn))
+            .with_kernel_executable(bitmaps.kernel_execute_bitmap.page_state(gpn))
+            .with_user_executable(bitmaps.user_execute_bitmap.page_state(gpn))
     }
 
     /// Zero the given range of memory.
@@ -615,30 +589,15 @@ unsafe impl GuestMemoryAccess for GuestMemoryMapping {
     fn access_bitmap(&self) -> Option<guestmem::BitmapInfo> {
         // When the permissions bitmaps are available, they take preference and
         // therefore should be no more permissive than the access bitmap.
+        //
         if let Some(bitmaps) = self.access_permission_bitmaps.as_ref() {
             Some(guestmem::BitmapInfo {
-                read_bitmap: NonNull::new(bitmaps.read_bitmap.as_sparse_mapping().as_ptr().cast())
+                read_bitmap: NonNull::new(bitmaps.read_bitmap.as_ptr().cast()).unwrap(),
+                write_bitmap: NonNull::new(bitmaps.write_bitmap.as_ptr().cast()).unwrap(),
+                kernel_execute_bitmap: NonNull::new(bitmaps.kernel_execute_bitmap.as_ptr().cast())
                     .unwrap(),
-                write_bitmap: NonNull::new(
-                    bitmaps.write_bitmap.as_sparse_mapping().as_ptr().cast(),
-                )
-                .unwrap(),
-                kernel_execute_bitmap: NonNull::new(
-                    bitmaps
-                        .kernel_execute_bitmap
-                        .as_sparse_mapping()
-                        .as_ptr()
-                        .cast(),
-                )
-                .unwrap(),
-                user_execute_bitmap: NonNull::new(
-                    bitmaps
-                        .user_execute_bitmap
-                        .as_sparse_mapping()
-                        .as_ptr()
-                        .cast(),
-                )
-                .unwrap(),
+                user_execute_bitmap: NonNull::new(bitmaps.user_execute_bitmap.as_ptr().cast())
+                    .unwrap(),
                 bit_offset: 0,
             })
         } else {

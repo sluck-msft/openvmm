@@ -134,7 +134,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             // FUTURE: do this lazily.
             let vp_count = std::cmp::max(1, params.processor_topology.vp_count() - 1);
             let accept_subrange = move |subrange| {
-                acceptor.accept_vtl0_pages(subrange).unwrap();
+                acceptor.accept_lower_vtl_pages(subrange).unwrap();
                 if hardware_isolated {
                     // For VBS-isolated VMs, the VTL protections are set as
                     // part of the accept call.
@@ -220,30 +220,27 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             GuestPartitionMemoryView::new(params.mem_layout, true)?
         };
 
+        tracing::debug!("Building encrypted memory map");
+        let encrypted_mapping = Arc::new({
+            let _span = tracing::info_span!("map_vtl1_memory").entered();
+            GuestMemoryMapping::builder(0)
+                .dma_base_address(None) // prohibit direct DMA attempts until TDISP is supported
+                .use_partition_valid_memory(Some(valid_encrypted_memory.clone()))
+                .build(&gpa_fd, params.mem_layout)
+                .context("failed to map vtl0 memory")?
+        });
+
+        let use_vtl1 = params.maximum_vtl >= Vtl::Vtl1;
+
         tracing::debug!("Building VTL0 memory map");
         let vtl0_mapping = Arc::new({
             let _span = tracing::info_span!("map_vtl0_memory", CVM_ALLOWED).entered();
             GuestMemoryMapping::builder(0)
                 .dma_base_address(None)
-                .use_access_permissions_bitmap(Some(true))
+                .use_access_permissions_bitmap(if use_vtl1 { Some(true) } else { None })
                 .build_with_bitmap(&gpa_fd, &encrypted_memory_view)
                 .context("failed to map vtl0 memory")?
         });
-
-        // TODO: check if the max_vtl is correct here?
-        let vtl1_mapping = if params.maximum_vtl >= Vtl::Vtl1 {
-            tracing::debug!("Building VTL1 memory map");
-            Some(Arc::new({
-                let _span = tracing::info_span!("map_vtl1_memory").entered();
-                GuestMemoryMapping::builder(0)
-                    .dma_base_address(None) // prohibit direct DMA attempts until TDISP is supported
-                    .use_bitmap(Some(true))
-                    .build(&gpa_fd, params.mem_layout)
-                    .context("failed to map vtl0 memory")?
-            }))
-        } else {
-            None
-        };
 
         // Create the shared mapping with the complete memory map, to include
         // the shared pool. This memory is not private to VTL2 and is expected
@@ -346,23 +343,27 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         )
         .context("failed to make vtl0 guest memory")?;
 
-        tracing::debug!("Creating VTL1 guest memory");
-        let vtl1_gm = if params.maximum_vtl >= Vtl::Vtl1 {
+        let (vtl1_mapping, vtl1_gm) = if use_vtl1 {
             tracing::debug!("Creating VTL1 guest memory");
-            // TODO: does this even make sense? esp the part about reusing the shared mapping...
-            Some(
-                GuestMemory::new_multi_region(
-                    "vtl1",
-                    vtom,
-                    vec![
-                        Some(vtl1_mapping.as_ref().unwrap().clone()),
-                        Some(shared_mapping.clone()),
-                    ],
-                )
-                .context("failed to make vtl1 guest memory")?,
+            // For VTL 1, vtl protections are dictated by whether VTL 2 thinks
+            // this is valid lower-vtl memory, and therefore nothing extra is
+            // needed for the mapping.
+            (
+                Some(encrypted_mapping.clone()),
+                Some(
+                    GuestMemory::new_multi_region(
+                        "vtl1",
+                        vtom,
+                        vec![
+                            Some(encrypted_mapping.clone()),
+                            Some(shared_mapping.clone()),
+                        ],
+                    )
+                    .context("failed to make vtl1 guest memory")?,
+                ),
             )
         } else {
-            None
+            (None, None)
         };
 
         if params.isolation == IsolationType::Snp {
@@ -399,7 +400,9 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         let protector = Arc::new(HardwareIsolatedMemoryProtector::new(
             encrypted_memory_view.partition_valid_memory().clone(),
             valid_shared_memory.clone(),
+            encrypted_mapping.clone(),
             vtl0_mapping.clone(),
+            // vtl1_mapping.clone(),
             params.mem_layout.clone(),
             acceptor.as_ref().unwrap().clone(),
         )) as Arc<dyn ProtectIsolatedMemory>;
