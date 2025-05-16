@@ -6,7 +6,7 @@
 use crate::HardwareIsolatedMemoryProtector;
 use crate::MemoryAcceptor;
 use crate::mapping::GuestMemoryMapping;
-use crate::mapping::GuestValidMemory;
+use crate::mapping::GuestPartitionMemoryBuilder;
 use anyhow::Context;
 use cvm_tracing::CVM_ALLOWED;
 use futures::future::try_join_all;
@@ -211,18 +211,19 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         // kernel-registered RAM.
 
         tracing::debug!("Building valid encrypted memory view");
-        let valid_encrypted_memory = Arc::new({
-            let _span = tracing::info_span!("create encrypted memory bitmap").entered();
-            GuestValidMemory::new(params.mem_layout, true)?
-        });
+        let encrypted_memory_builder = {
+            let _span = tracing::info_span!("create encrypted memory view").entered();
+            GuestPartitionMemoryBuilder::new(params.mem_layout, Some(true))?
+        };
 
         tracing::debug!("Building VTL0 memory map");
         let vtl0_mapping = Arc::new({
             let _span = tracing::info_span!("map_vtl0_memory", CVM_ALLOWED).entered();
-            GuestMemoryMapping::builder(0)
-                .dma_base_address(None) // prohibit direct DMA attempts until TDISP is supported
-                .use_partition_valid_memory(Some(valid_encrypted_memory.clone()))
-                .build(&gpa_fd, params.mem_layout)
+            encrypted_memory_builder
+                .build_guest_memory_mapping(
+                    &gpa_fd,
+                    GuestMemoryMapping::builder(0).dma_base_address(None),
+                )
                 .context("failed to map vtl0 memory")?
         });
 
@@ -292,27 +293,34 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
         tracing::debug!("Building shared memory map");
 
-        let valid_shared_memory = Arc::new({
-            let _span = tracing::info_span!("create shared memory bitmap").entered();
-            GuestValidMemory::new(params.complete_memory_layout, false)?
-        });
+        let shared_memory_builder = {
+            let _span = tracing::info_span!("create shared memory view").entered();
+            GuestPartitionMemoryBuilder::new(params.complete_memory_layout, Some(false))?
+        };
+
+        let valid_shared_memory = shared_memory_builder.partition_valid_memory();
 
         // Update the shared mapping bitmap for pages used by the shared
         // visibility pool to be marked as shared, since by default pages are
         // marked as no-access in the bitmap.
         tracing::debug!("Updating shared mapping bitmaps");
         for range in params.shared_pool {
-            valid_shared_memory.update_valid(range.range, true);
+            valid_shared_memory
+                .as_ref()
+                .unwrap()
+                .update_valid(range.range, true);
         }
 
         let shared_mapping = Arc::new({
             let _span = tracing::info_span!("map_shared_memory", CVM_ALLOWED).entered();
-            GuestMemoryMapping::builder(shared_offset)
-                .shared(true)
-                .use_partition_valid_memory(Some(valid_shared_memory.clone()))
-                .ignore_registration_failure(params.boot_init.is_none())
-                .dma_base_address(Some(dma_base_address))
-                .build(&gpa_fd, params.complete_memory_layout)
+            shared_memory_builder
+                .build_guest_memory_mapping(
+                    &gpa_fd,
+                    GuestMemoryMapping::builder(shared_offset)
+                        .shared(true)
+                        .ignore_registration_failure(params.boot_init.is_none())
+                        .dma_base_address(Some(dma_base_address)),
+                )
                 .context("failed to map shared memory")?
         });
 
@@ -367,8 +375,11 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         let private_vtl0_memory = GuestMemory::new("trusted", vtl0_mapping.clone());
 
         let protector = Arc::new(HardwareIsolatedMemoryProtector::new(
-            valid_encrypted_memory.clone(),
-            valid_shared_memory.clone(),
+            encrypted_memory_builder
+                .partition_valid_memory()
+                .unwrap()
+                .clone(),
+            valid_shared_memory.unwrap().clone(),
             vtl0_mapping.clone(),
             params.mem_layout.clone(),
             acceptor.as_ref().unwrap().clone(),
@@ -387,16 +398,22 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             }),
         }
     } else {
+        let partition_memory_builder = GuestPartitionMemoryBuilder::new(params.mem_layout, None)?;
+
         tracing::debug!("Creating VTL0 guest memory");
         let vtl0_mapping = {
             let _span = tracing::info_span!("map_vtl0_memory", CVM_ALLOWED).entered();
             let base_address = params.vtl0_alias_map_bit.unwrap_or(0);
+
             Arc::new(
-                GuestMemoryMapping::builder(base_address)
-                    .for_kernel_access(true)
-                    .dma_base_address(Some(base_address))
-                    .ignore_registration_failure(params.boot_init.is_none())
-                    .build(&gpa_fd, params.mem_layout)
+                partition_memory_builder
+                    .build_guest_memory_mapping(
+                        &gpa_fd,
+                        GuestMemoryMapping::builder(base_address)
+                            .for_kernel_access(true)
+                            .dma_base_address(Some(base_address))
+                            .ignore_registration_failure(params.boot_init.is_none()),
+                    )
                     .context("failed to map vtl0 memory")?,
             )
         };
@@ -427,13 +444,17 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 tracing::debug!("Creating VTL 1 memory map");
 
                 let _span = tracing::info_span!("map_vtl1_memory", CVM_ALLOWED).entered();
-                let vtl1_mapping = GuestMemoryMapping::builder(0)
-                    .for_kernel_access(true)
-                    .dma_base_address(Some(0))
-                    .ignore_registration_failure(params.boot_init.is_none())
-                    .build(&gpa_fd, params.mem_layout)
-                    .context("failed to map vtl1 memory")?;
-                Some(Arc::new(vtl1_mapping))
+                Some(Arc::new(
+                    partition_memory_builder
+                        .build_guest_memory_mapping(
+                            &gpa_fd,
+                            GuestMemoryMapping::builder(0)
+                                .for_kernel_access(true)
+                                .dma_base_address(Some(0))
+                                .ignore_registration_failure(params.boot_init.is_none()),
+                        )
+                        .context("failed to map vtl1 memory")?,
+                ))
             }
         } else {
             None
