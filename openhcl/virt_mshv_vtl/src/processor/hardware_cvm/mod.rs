@@ -1722,13 +1722,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             }
         }
 
-        // TODO GUEST VSM: currently don't have a good way of supporting no
-        // enforcement of vtl 1 protections, as the related guest memory objects
-        // are initialized before this call.
-        if !value.enable_vtl_protection() {
-            return Err(HvError::InvalidRegisterValue);
-        }
-
         protector.change_default_vtl_protections(
             targeted_vtl,
             protections,

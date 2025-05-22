@@ -1078,16 +1078,19 @@ unsafe impl Sync for SendPtrU8 {}
 impl MemoryRegion {
     fn new(imp: &impl GuestMemoryAccess) -> Self {
         #[cfg(feature = "bitmap")]
-        let bitmap_info = imp.access_bitmap();
-        let bitmaps = bitmap_info.as_ref().map(|bm| {
-            [
-                SendPtrU8(bm.read_bitmap),
-                SendPtrU8(bm.write_bitmap),
-                SendPtrU8(bm.kernel_execute_bitmap),
-                SendPtrU8(bm.user_execute_bitmap),
-            ]
-        });
-        let bitmap_start = bitmap_info.map_or(0, |bi| bi.bit_offset);
+        let (bitmaps, bitmap_start) = {
+            let bitmap_info = imp.access_bitmap();
+            let bitmaps = bitmap_info.as_ref().map(|bm| {
+                [
+                    SendPtrU8(bm.read_bitmap),
+                    SendPtrU8(bm.write_bitmap),
+                    SendPtrU8(bm.kernel_execute_bitmap),
+                    SendPtrU8(bm.user_execute_bitmap),
+                ]
+            });
+            let bitmap_start = bitmap_info.map_or(0, |bi| bi.bit_offset);
+            (bitmaps, bitmap_start)
+        };
         Self {
             mapping: imp.mapping().map(SendPtrU8),
             #[cfg(feature = "bitmap")]

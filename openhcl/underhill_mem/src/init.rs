@@ -206,10 +206,6 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
         // Create the encrypted mapping with just the lower VTL memory.
         //
-        // Start by giving VTL 0 full access to all lower-vtl memory. TODO GUEST
-        // VSM: with lazy acceptance, it should instead be initialized to no
-        // access.
-        //
         // Do not register this mapping with the kernel. It will not be safe for
         // use with syscalls that expect virtual addresses to be in
         // kernel-registered RAM.
@@ -222,22 +218,24 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
         tracing::debug!("Building encrypted memory map");
         let encrypted_mapping = Arc::new({
-            let _span = tracing::info_span!("map_vtl1_memory").entered();
+            let _span = tracing::info_span!("map_vtl1_memory", CVM_ALLOWED).entered();
             GuestMemoryMapping::builder(0)
-                .dma_base_address(None) // prohibit direct DMA attempts until TDISP is supported
-                .use_partition_valid_memory(Some(valid_encrypted_memory.clone()))
-                .build(&gpa_fd, params.mem_layout)
-                .context("failed to map vtl0 memory")?
+                .dma_base_address(None)
+                .build_with_bitmap(&gpa_fd, &encrypted_memory_view)
+                .context("failed to map lower vtl encrypted memory")?
         });
 
         let use_vtl1 = params.maximum_vtl >= Vtl::Vtl1;
 
+        // Start by giving VTL 0 full access to all lower-vtl memory. TODO GUEST
+        // VSM: with lazy acceptance, it should instead be initialized to no
+        // access.
         tracing::debug!("Building VTL0 memory map");
         let vtl0_mapping = Arc::new({
             let _span = tracing::info_span!("map_vtl0_memory", CVM_ALLOWED).entered();
             GuestMemoryMapping::builder(0)
                 .dma_base_address(None)
-                .use_access_permissions_bitmap(if use_vtl1 { Some(true) } else { None })
+                .use_permissions_bitmaps(if use_vtl1 { Some(true) } else { None })
                 .build_with_bitmap(&gpa_fd, &encrypted_memory_view)
                 .context("failed to map vtl0 memory")?
         });
@@ -305,9 +303,6 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         // confused about shared memory, and our current use of kernel-mode
         // guest memory access is limited to low-perf paths where we can use
         // bounce buffering.
-        //
-        // No need to use the access permissions bitmaps--the host cannot have
-        // greater access to the pages than VTL 0.
         tracing::debug!("Building shared memory map");
 
         let shared_memory_view = {
@@ -345,9 +340,9 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
         let (vtl1_mapping, vtl1_gm) = if use_vtl1 {
             tracing::debug!("Creating VTL1 guest memory");
-            // For VTL 1, vtl protections are dictated by whether VTL 2 thinks
-            // this is valid lower-vtl memory, and therefore nothing extra is
-            // needed for the mapping.
+            // For VTL 1, vtl protections are dictated by what VTL 2 thinks is
+            // valid lower-vtl memory, and therefore additional vtl protection
+            // bitmaps aren't needed for the mapping.
             (
                 Some(encrypted_mapping.clone()),
                 Some(
@@ -402,7 +397,6 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             valid_shared_memory.clone(),
             encrypted_mapping.clone(),
             vtl0_mapping.clone(),
-            // vtl1_mapping.clone(),
             params.mem_layout.clone(),
             acceptor.as_ref().unwrap().clone(),
         )) as Arc<dyn ProtectIsolatedMemory>;

@@ -285,55 +285,17 @@ impl MemoryAcceptor {
         &self,
         range: MemoryRange,
     ) -> Result<(), ApplyVtlProtectionsError> {
-        // self.apply_protections_from_flags(range, GuestVtl::Vtl0, HV_MAP_GPA_PERMISSIONS_ALL)
         self.apply_protections(range, GuestVtl::Vtl0, HV_MAP_GPA_PERMISSIONS_ALL)
     }
 
-    /// Query the current permissions for a vtl on a page.
-    // fn vtl_permissions(
-    //     &self,
-    //     vtl: Vtl,
-    //     gpa: u64,
-    // ) -> Result<GpaVtlPermissions, QueryVtlPermissionsError> {
-    //     match self.isolation {
-    //         IsolationType::None | IsolationType::Vbs => unimplemented!(),
-    //         IsolationType::Snp => {
-    //             // TODO CVM GUEST VSM: track the permissions directly in
-    //             // underhill. For now, use rmpquery--but note this is only
-    //             // supported on Genoa+.
-    //             let rmpadjust = self
-    //                 .mshv_vtl
-    //                 .rmpquery_page(
-    //                     gpa,
-    //                     vtl.try_into()
-    //                         .expect("only query non-VTL 2 permissions on hardware cvm"),
-    //                 )
-    //                 .map_err(QueryVtlPermissionsError::Snp)?;
-
-    //             Ok(GpaVtlPermissions::Snp(rmpadjust))
-    //         }
-    //         IsolationType::Tdx => todo!(),
-    //     }
-    // }
-
     fn apply_protections(
-        // fn apply_protections_from_flags(
         &self,
         range: MemoryRange,
         vtl: GuestVtl,
-        // vtl: Vtl,
         flags: HvMapGpaFlags,
     ) -> Result<(), ApplyVtlProtectionsError> {
         let permissions = GpaVtlPermissions::new(self.isolation, vtl, flags);
-        //     self.apply_protections(range, vtl.into(), permissions)
-        // }
 
-        // fn apply_protections(
-        //     &self,
-        //     range: MemoryRange,
-        //     vtl: Vtl,
-        //     protections: GpaVtlPermissions,
-        // ) -> Result<(), ApplyVtlProtectionsError> {
         match permissions {
             GpaVtlPermissions::Vbs(flags) => {
                 // For VBS-isolated VMs, the permissions apply to all lower
@@ -346,7 +308,6 @@ impl MemoryAcceptor {
             GpaVtlPermissions::Snp(rmpadjust) => {
                 // For SNP VMs, the permissions apply to the specified VTL.
                 // Therefore VTL 2 cannot specify its own permissions.
-                // assert_ne!(vtl, Vtl::Vtl2);
                 self.mshv_vtl
                     .rmpadjust_pages(range, rmpadjust, false)
                     .map_err(|err| ApplyVtlProtectionsError::Snp {
@@ -359,7 +320,6 @@ impl MemoryAcceptor {
             GpaVtlPermissions::Tdx(attributes, mask) => {
                 // For TDX VMs, the permissions apply to the specified VTL.
                 // Therefore VTL 2 cannot specify its own permissions.
-                // assert_ne!(vtl, Vtl::Vtl2);
                 self.mshv_vtl
                     .tdx_set_page_attributes(range, attributes, mask)
                     .map_err(|err| ApplyVtlProtectionsError::Tdx {
@@ -387,7 +347,6 @@ pub struct HardwareIsolatedMemoryProtector {
 
 struct HypercallOverlay {
     gpn: u64,
-    // permissions: GpaVtlPermissions,
     permissions: HvMapGpaFlags,
 }
 
@@ -395,10 +354,7 @@ struct HardwareIsolatedMemoryProtectorInner {
     valid_encrypted: Arc<GuestValidMemory>,
     valid_shared: Arc<GuestValidMemory>,
     encrypted: Arc<GuestMemoryMapping>,
-    // vtl0: Arc<GuestMemoryMapping>,
-    // vtl1: Option<Arc<GuestMemoryMapping>>,
     default_vtl_permissions: DefaultVtlPermissions,
-    // vtl1_protections_enabled: bool,
 }
 
 impl HardwareIsolatedMemoryProtector {
@@ -411,7 +367,6 @@ impl HardwareIsolatedMemoryProtector {
         valid_shared: Arc<GuestValidMemory>,
         encrypted: Arc<GuestMemoryMapping>,
         vtl0: Arc<GuestMemoryMapping>,
-        // vtl1: Option<Arc<GuestMemoryMapping>>,
         layout: MemoryLayout,
         acceptor: Arc<MemoryAcceptor>,
     ) -> Self {
@@ -420,8 +375,6 @@ impl HardwareIsolatedMemoryProtector {
                 valid_encrypted,
                 valid_shared,
                 encrypted,
-                // vtl0,
-                // vtl1,
                 // Grant only VTL 0 all permissions. This will be altered
                 // later by VTL 1 enablement and by VTL 1 itself.
                 default_vtl_permissions: DefaultVtlPermissions {
@@ -448,26 +401,19 @@ impl HardwareIsolatedMemoryProtector {
         for range in ranges {
             match overlay_lock.as_mut() {
                 Some(overlay) if range.contains_addr(overlay.gpn * HV_PAGE_SIZE) => {
-                    // overlay.permissions.set(vtl, protections);
                     overlay.permissions = protections;
 
                     let overlay_address = overlay.gpn * HV_PAGE_SIZE;
                     let overlay_offset = range.offset_of(overlay_address).unwrap();
                     let (left, right) = range.split_at_offset(overlay_offset);
 
-                    // self.acceptor
-                    // .apply_protections_from_flags(left, vtl, protections)?;
                     self.apply_protections(left, vtl, protections)?;
                     let sub_range = MemoryRange::new((overlay.gpn + 1) * HV_PAGE_SIZE..right.end());
                     if !sub_range.is_empty() {
-                        // self.acceptor
-                        // .apply_protections_from_flags(sub_range, vtl, protections)?;
                         self.apply_protections(sub_range, vtl, protections)?;
                     }
                 }
                 _ => {
-                    // self.acceptor
-                    // .apply_protections_from_flags(*range, vtl, protections)?;
                     self.apply_protections(*range, vtl, protections)?;
                 }
             }
@@ -483,7 +429,6 @@ impl HardwareIsolatedMemoryProtector {
     ) -> Result<(), ApplyVtlProtectionsError> {
         let range = MemoryRange::new(overlay.gpn * HV_PAGE_SIZE..(overlay.gpn + 1) * HV_PAGE_SIZE);
 
-        // self.acceptor
         self.apply_protections(range, vtl, overlay.permissions)?;
 
         Ok(())
@@ -496,11 +441,9 @@ impl HardwareIsolatedMemoryProtector {
         vtl: GuestVtl,
         protections: HvMapGpaFlags,
     ) -> Result<(), ApplyVtlProtectionsError> {
-        if vtl == GuestVtl::Vtl0 && self.vtl1_protections_enabled() {
+        if vtl == GuestVtl::Vtl0 {
             // Only VTL 0 vtl permissions are explicitly tracked
-            self.vtl0
-                .update_access_permission_bitmaps(range, protections)
-                .expect("vtl 1 protections enabled, vtl permissions should be tracked");
+            self.vtl0.update_permission_bitmaps(range, protections);
         }
         self.acceptor.apply_protections(range, vtl, protections)
     }
@@ -540,7 +483,9 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
 
         let inner = self.inner.lock();
 
-        // Filter out the GPNs that are already in the correct state.
+        // Filter out the GPNs that are already in the correct state. If the
+        // page is becoming shared, make sure the requesting VTL has read/write
+        // vtl permissions to the page.
         let orig_gpns = gpns;
         let mut vtl_permission_failure = false;
         let gpns = gpns
@@ -554,6 +499,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                         .query_access_permission(gpn)
                         .expect("vtl 1 protections enabled, vtl permissions should be tracked");
                     if !permissions.readable() || !permissions.writable() {
+                        // TODO GUEST VSM: should this send a memory intercept instead?
                         vtl_permission_failure = true;
                         false
                     } else {
@@ -588,10 +534,9 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         };
 
         for &range in &ranges {
-            if shared && vtl == GuestVtl::Vtl0 && self.vtl1_protections_enabled() {
+            if shared && vtl == GuestVtl::Vtl0 {
                 self.vtl0
-                    .update_access_permission_bitmaps(range, HV_MAP_GPA_PERMISSIONS_NONE)
-                    .expect("vtl 1 protections enabled, vtl permissions should be tracked");
+                    .update_permission_bitmaps(range, HV_MAP_GPA_PERMISSIONS_NONE);
             }
 
             clear_bitmap.update_valid(range, false);
@@ -634,7 +579,16 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                 // processed.
                 (
                     if vtl_permission_failure {
-                        Err((HvError::AccessDenied, gpns.len()))
+                        // Figure out the index of the last gpn that succeeded
+                        // the vtl permission check in the pre-filtered list to
+                        // report the first failed gpn that will be reported
+                        // back to the caller.
+                        let last_succeeded_index = orig_gpns
+                            .iter()
+                            .position(|gpn| *gpn == *gpns.last().unwrap())
+                            .expect("failed gpn should be present in the list");
+                        assert!(last_succeeded_index + 1 < orig_gpns.len());
+                        Err((HvError::AccessDenied, last_succeeded_index + 1))
                     } else {
                         Ok(())
                     },
@@ -723,14 +677,10 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             // the default protections directly without handling of the
             // hypercall overlay.
             for &range in &ranges {
-                // self.acceptor
-                // .apply_protections_from_flags(
                 self.apply_protections(range, GuestVtl::Vtl0, inner.default_vtl_permissions.vtl0)
                     .expect("should be able to apply default protections");
 
                 if let Some(vtl1_protections) = inner.default_vtl_permissions.vtl1 {
-                    // self.acceptor
-                    // .apply_protections_from_flags(range, GuestVtl::Vtl1, vtl1_protections)
                     self.apply_protections(range, GuestVtl::Vtl1, vtl1_protections)
                         .expect(
                             "everything should be in a state where we can apply VTL protections",
@@ -916,20 +866,16 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
 
         let current_permissions = match self.acceptor.isolation {
             IsolationType::None | IsolationType::Vbs => unreachable!(),
-            // hardware_isolation @ (IsolationType::Snp | IsolationType::Tdx) => {
             IsolationType::Snp | IsolationType::Tdx => {
-                if self.vtl1_protections_enabled() && vtl == GuestVtl::Vtl0 {
-                    // The overlay page should not be host visible. // TODO: verify
+                if vtl == GuestVtl::Vtl0 {
                     self.vtl0
                         .query_access_permission(gpn)
-                        .expect("vtl 1 protections are enabled, vtl permissions should be tracked")
+                        .unwrap_or(HV_MAP_GPA_PERMISSIONS_ALL)
                 } else {
                     // The permissions should be the same as when VTL 2
                     // initialized guest memory.
                     HV_MAP_GPA_PERMISSIONS_ALL
                 }
-
-                // GpaVtlPermissions::new(hardware_isolation, vtl, permissions)
             }
         };
 
@@ -938,8 +884,6 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             permissions: current_permissions,
         });
 
-        // self.acceptor
-        // .apply_protections_from_flags(
         self.apply_protections(
             MemoryRange::new(gpn * HV_PAGE_SIZE..(gpn + 1) * HV_PAGE_SIZE),
             vtl,
