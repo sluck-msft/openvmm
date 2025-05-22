@@ -41,6 +41,7 @@ use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use registrar::RegisterMemory;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use thiserror::Error;
 use virt::IsolationType;
 use virt_mshv_vtl::ProtectIsolatedMemory;
@@ -380,6 +381,7 @@ pub struct HardwareIsolatedMemoryProtector {
     acceptor: Arc<MemoryAcceptor>,
     // TODO GUEST VSM: synchronize vtl protection bitmaps
     vtl0: Arc<GuestMemoryMapping>,
+    vtl1_protections_enabled: AtomicBool,
     hypercall_overlay: VtlArray<Arc<Mutex<Option<HypercallOverlay>>>, 2>,
 }
 
@@ -396,7 +398,7 @@ struct HardwareIsolatedMemoryProtectorInner {
     // vtl0: Arc<GuestMemoryMapping>,
     // vtl1: Option<Arc<GuestMemoryMapping>>,
     default_vtl_permissions: DefaultVtlPermissions,
-    vtl1_protections_enabled: bool,
+    // vtl1_protections_enabled: bool,
 }
 
 impl HardwareIsolatedMemoryProtector {
@@ -426,11 +428,11 @@ impl HardwareIsolatedMemoryProtector {
                     vtl0: HV_MAP_GPA_PERMISSIONS_ALL,
                     vtl1: None,
                 },
-                vtl1_protections_enabled: false,
             }),
             layout,
             acceptor,
             vtl0,
+            vtl1_protections_enabled: AtomicBool::new(false),
             hypercall_overlay: VtlArray::from_fn(|_| Arc::new(Mutex::new(None))),
         }
     }
@@ -494,11 +496,11 @@ impl HardwareIsolatedMemoryProtector {
         vtl: GuestVtl,
         protections: HvMapGpaFlags,
     ) -> Result<(), ApplyVtlProtectionsError> {
-        // TODO permission bitmaps shouldn't be valid if there's no VTL 1
-        if vtl == GuestVtl::Vtl0 {
+        if vtl == GuestVtl::Vtl0 && self.vtl1_protections_enabled() {
             // Only VTL 0 vtl permissions are explicitly tracked
             self.vtl0
-                .update_access_permission_bitmaps(range, protections);
+                .update_access_permission_bitmaps(range, protections)
+                .expect("vtl 1 protections enabled, vtl permissions should be tracked");
         }
         self.acceptor.apply_protections(range, vtl, protections)
     }
@@ -546,9 +548,11 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             .copied()
             .filter(|&gpn| inner.valid_shared.check_valid(gpn) != shared)
             .take_while(|&gpn| {
-                // TODO: maybe don't just rely on vtl1_protections_enabled
-                if vtl == GuestVtl::Vtl0 && shared && inner.vtl1_protections_enabled {
-                    let permissions = self.vtl0.query_access_permission(gpn);
+                if vtl == GuestVtl::Vtl0 && shared && self.vtl1_protections_enabled() {
+                    let permissions = self
+                        .vtl0
+                        .query_access_permission(gpn)
+                        .expect("vtl 1 protections enabled, vtl permissions should be tracked");
                     if !permissions.readable() || !permissions.writable() {
                         vtl_permission_failure = true;
                         false
@@ -584,10 +588,12 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         };
 
         for &range in &ranges {
-            if shared {
+            if shared && vtl == GuestVtl::Vtl0 && self.vtl1_protections_enabled() {
                 self.vtl0
-                    .update_access_permission_bitmaps(range, HV_MAP_GPA_PERMISSIONS_NONE);
+                    .update_access_permission_bitmaps(range, HV_MAP_GPA_PERMISSIONS_NONE)
+                    .expect("vtl 1 protections enabled, vtl permissions should be tracked");
             }
+
             clear_bitmap.update_valid(range, false);
         }
 
@@ -896,7 +902,9 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                 .any(|r| r.range.contains_addr(gpn * HV_PAGE_SIZE))
         );
 
-        let inner = self.inner.lock();
+        // Ensure no host visibility changes while changing protections on the
+        // overlay page.
+        let _lock = self.inner.lock();
 
         let mut overlay = self.hypercall_overlay[vtl].lock();
 
@@ -910,11 +918,11 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             IsolationType::None | IsolationType::Vbs => unreachable!(),
             // hardware_isolation @ (IsolationType::Snp | IsolationType::Tdx) => {
             IsolationType::Snp | IsolationType::Tdx => {
-                // let permissions =
-                // TODO: can this be more robust? Only relying on vtl1_protections_enabled to avoid panicking.
-                if inner.vtl1_protections_enabled && vtl == GuestVtl::Vtl0 {
+                if self.vtl1_protections_enabled() && vtl == GuestVtl::Vtl0 {
                     // The overlay page should not be host visible. // TODO: verify
-                    self.vtl0.query_access_permission(gpn)
+                    self.vtl0
+                        .query_access_permission(gpn)
+                        .expect("vtl 1 protections are enabled, vtl permissions should be tracked")
                 } else {
                     // The permissions should be the same as when VTL 2
                     // initialized guest memory.
@@ -959,10 +967,12 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
     }
 
     fn set_vtl1_protections_enabled(&self) {
-        self.inner.lock().vtl1_protections_enabled = true;
+        self.vtl1_protections_enabled
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn vtl1_protections_enabled(&self) -> bool {
-        self.inner.lock().vtl1_protections_enabled
+        self.vtl1_protections_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }

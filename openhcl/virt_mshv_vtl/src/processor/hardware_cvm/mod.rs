@@ -1735,8 +1735,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             &mut self.tlb_flush_lock_access(),
         )?;
 
-        // TODO GUEST VSM: actually use the enable_vtl_protection value when
-        // deciding whether to check vtl access()
         // TODO GUEST VSM: should only be set if enable_vtl_protection is true?
         protector.set_vtl1_protections_enabled();
 

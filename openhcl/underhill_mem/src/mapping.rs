@@ -134,10 +134,9 @@ pub struct GuestMemoryMapping {
     valid_memory: Option<Arc<GuestValidMemory>>,
     // #[inspect(skip)]
     // access_bitmap_lock: Mutex<()>,
+    // TODO GUEST VSM: synchronize bitmap access
     #[inspect(with = "Option::is_some")]
     access_permission_bitmaps: Option<AccessPermissionBitmaps>,
-    #[inspect(skip)]
-    access_permission_bitmaps_lock: Mutex<()>,
     // #[inspect(with = "Option::is_some")]
     // write_bitmap: Option<SparseMapping>,
     // #[inspect(with = "Option::is_some")]
@@ -155,6 +154,12 @@ struct AccessPermissionBitmaps {
     write_bitmap: GuestMemoryBitmap,
     kernel_execute_bitmap: GuestMemoryBitmap,
     user_execute_bitmap: GuestMemoryBitmap,
+}
+
+#[derive(Error, Debug)]
+pub enum VtlPermissionsError {
+    #[error("no vtl 1 permissions enforcement, bitmap is not present")]
+    NoPermissionsTracked,
 }
 
 #[derive(Debug)]
@@ -492,7 +497,6 @@ impl GuestMemoryMappingBuilder {
             valid_memory: self.valid_memory.clone(),
             // access_bitmap_lock: Default::default(),
             access_permission_bitmaps,
-            access_permission_bitmaps_lock: Default::default(),
             registrar,
         })
     }
@@ -518,9 +522,12 @@ impl GuestMemoryMapping {
 
     // TODO: use the bitmap cfg macro
     /// Panics if the range is outside of guest RAM.
-    pub fn update_access_permission_bitmaps(&self, range: MemoryRange, flags: HvMapGpaFlags) {
+    pub fn update_access_permission_bitmaps(
+        &self,
+        range: MemoryRange,
+        flags: HvMapGpaFlags,
+    ) -> Result<(), VtlPermissionsError> {
         if let Some(bitmaps) = self.access_permission_bitmaps.as_ref() {
-            let _lock = self.access_permission_bitmaps_lock.lock();
             // TODO GUEST VSM: synchronize bitmaps
             // let bitmaps = self.access_permission_bitmaps.as_ref().unwrap();
             bitmaps.read_bitmap.update(range, flags.readable());
@@ -531,17 +538,23 @@ impl GuestMemoryMapping {
             bitmaps
                 .user_execute_bitmap
                 .update(range, flags.user_executable());
+            Ok(())
+        } else {
+            Err(VtlPermissionsError::NoPermissionsTracked)
         }
     }
 
     /// Panics if the range is outside of guest RAM.
-    pub fn query_access_permission(&self, gpn: u64) -> HvMapGpaFlags {
-        let bitmaps = self.access_permission_bitmaps.as_ref().unwrap();
-        HvMapGpaFlags::new()
-            .with_readable(bitmaps.read_bitmap.page_state(gpn))
-            .with_writable(bitmaps.write_bitmap.page_state(gpn))
-            .with_kernel_executable(bitmaps.kernel_execute_bitmap.page_state(gpn))
-            .with_user_executable(bitmaps.user_execute_bitmap.page_state(gpn))
+    pub fn query_access_permission(&self, gpn: u64) -> Result<HvMapGpaFlags, VtlPermissionsError> {
+        if let Some(bitmaps) = self.access_permission_bitmaps.as_ref() {
+            Ok(HvMapGpaFlags::new()
+                .with_readable(bitmaps.read_bitmap.page_state(gpn))
+                .with_writable(bitmaps.write_bitmap.page_state(gpn))
+                .with_kernel_executable(bitmaps.kernel_execute_bitmap.page_state(gpn))
+                .with_user_executable(bitmaps.user_execute_bitmap.page_state(gpn)))
+        } else {
+            Err(VtlPermissionsError::NoPermissionsTracked)
+        }
     }
 
     /// Zero the given range of memory.
