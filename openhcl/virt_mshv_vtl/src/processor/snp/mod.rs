@@ -277,11 +277,16 @@ impl HardwareIsolatedBacking for SnpBacked {
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
         include_optional_state: bool,
+        calculate_instruction_length: bool,
     ) -> InterceptMessageState {
         let vmsa = this.runner.vmsa(vtl);
 
         InterceptMessageState {
-            instruction_length_and_cr8: (vmsa.next_rip() - vmsa.rip()) as u8,
+            instruction_length_and_cr8: if calculate_instruction_length {
+                (vmsa.next_rip() - vmsa.rip()) as u8
+            } else {
+                0
+            },
             cpl: vmsa.cpl(),
             efer_lma: vmsa.efer() & x86defs::X64_EFER_LMA != 0,
             cs: virt_seg_from_snp(vmsa.cs()).into(),
@@ -289,6 +294,7 @@ impl HardwareIsolatedBacking for SnpBacked {
             rflags: vmsa.rflags(),
             rax: vmsa.rax(),
             rdx: vmsa.rdx(),
+            tpr: vmsa.v_intr_cntrl().tpr() << 4,
             optional: if include_optional_state {
                 Some(InterceptMessageOptionalState {
                     ds: virt_seg_from_snp(vmsa.ds()).into(),
@@ -1805,18 +1811,12 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
     }
 
     fn inject_pending_event(&mut self, event_info: hvdef::HvX64PendingEvent) {
+        // TODO: refactor for TDX support
         assert!(event_info.reg_0.event_pending());
-        assert_eq!(
-            event_info.reg_0.event_type(),
-            hvdef::HV_X64_PENDING_EVENT_EXCEPTION
-        );
-
-        let exception = HvX64PendingExceptionEvent::from(event_info.reg_0.into_bits());
         assert!(!self.interruption_pending);
 
-        // There's no interruption pending, so just inject the exception
-        // directly without checking for double fault.
-        SnpBacked::set_pending_exception(self.vp, self.vtl, exception);
+        self.vp
+            .cvm_inject_emulation_pending_event(self.vtl, event_info);
     }
 
     fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool {

@@ -947,25 +947,28 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         gpn: u64,
         flags: HvMapGpaFlags,
     ) -> Result<(), VtlProtectionsViolation> {
-        // TODO: synchronize?
         // TODO: send memory intercept
 
-        if vtl == GuestVtl::Vtl0 {
-            if let Ok(permissions) = self.vtl0.query_access_permission(gpn) {
-                if flags != permissions {
+        if self.inner.lock().valid_shared.check_valid(gpn) {
+            return Ok(());
+        }
+
+        if vtl == GuestVtl::Vtl0 && self.vtl1_protections_enabled() {
+            let op = || self.vtl0.query_access_permission(gpn);
+            if let Ok(permissions) = guestmem::rcu().run(op) {
+                let missing_permissions =
+                    HvMapGpaFlags::from(flags.into_bits() & !permissions.into_bits());
+                if missing_permissions.into_bits() != 0 {
                     return Err(VtlProtectionsViolation {
                         vtl: Vtl::Vtl1,
-                        protections: HvMapGpaFlags::from(
-                            flags.into_bits() & permissions.into_bits(),
-                        ),
+                        protections: HvMapGpaFlags::from(missing_permissions),
                     });
                 }
             }
         }
 
         // Check VTL 2 protections
-        let inner = self.inner.lock();
-        if !inner.valid_encrypted.check_valid(gpn) && !inner.valid_shared.check_valid(gpn) {
+        if !self.inner.lock().valid_encrypted.check_valid(gpn) {
             return Err(VtlProtectionsViolation {
                 vtl: Vtl::Vtl2,
                 protections: flags,

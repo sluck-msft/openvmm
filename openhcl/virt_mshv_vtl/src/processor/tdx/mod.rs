@@ -547,6 +547,7 @@ impl HardwareIsolatedBacking for TdxBacked {
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
         include_optional_state: bool,
+        _calculate_instruction_length: bool,
     ) -> super::InterceptMessageState {
         let exit = TdxExit(this.runner.tdx_vp_enter_exit_info());
         let backing_vtl = &this.backing.vtls[vtl];
@@ -561,6 +562,7 @@ impl HardwareIsolatedBacking for TdxBacked {
             rflags: backing_vtl.private_regs.rflags,
             rax: shared_gps[TdxGp::RAX],
             rdx: shared_gps[TdxGp::RDX],
+            tpr: this.runner.tdx_apic_page(vtl).tpr.value as u8,
             optional: if include_optional_state {
                 Some(super::InterceptMessageOptionalState {
                     ds: this.read_segment(vtl, TdxSegmentReg::Ds).into(),
@@ -2999,13 +3001,18 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
 
     fn check_vtl_access(
         &mut self,
-        _gpa: u64,
-        _mode: TranslateMode,
-        _is_user_mode: bool,
+        gpa: u64,
+        mode: TranslateMode,
+        is_user_mode: bool,
     ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError<Self::Error>> {
-        // Lock Vtl TLB
-        // TODO TDX GUEST VSM: VTL1 not yet supported
-        Ok(())
+        self.vp
+            .cvm_check_vtl_access(gpa, self.vtl, mode, is_user_mode)
+            .map_err(
+                |err| virt_support_x86emu::emulate::EmuCheckVtlAccessError::AccessDenied {
+                    vtl: err.vtl,
+                    denied_flags: err.protections,
+                },
+            )
     }
 
     fn translate_gva(
@@ -3024,19 +3031,10 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
 
     fn inject_pending_event(&mut self, event_info: hvdef::HvX64PendingEvent) {
         assert!(event_info.reg_0.event_pending());
-        assert_eq!(
-            event_info.reg_0.event_type(),
-            hvdef::HV_X64_PENDING_EVENT_EXCEPTION
-        );
         assert!(!self.interruption_pending);
 
-        // There's no interruption pending, so just inject the exception
-        // directly without checking for double fault.
-        TdxBacked::set_pending_exception(
-            self.vp,
-            self.vtl,
-            HvX64PendingExceptionEvent::from(event_info.reg_0.into_bits()),
-        );
+        self.vp
+            .cvm_inject_emulation_pending_event(self.vtl, event_info);
     }
 
     fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool {

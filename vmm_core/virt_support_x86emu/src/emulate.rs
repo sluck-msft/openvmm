@@ -355,6 +355,7 @@ pub async fn emulate<T: EmulatorSupport>(
                 if let Err(err) =
                     cpu.check_vtl_access(phys_ip, TranslateMode::Execute, is_user_mode)
                 {
+                    tracing::info!(?err, "failed memory access check");
                     if inject_memory_access_fault(linear_ip, &err, support) {
                         return Ok(());
                     } else {
@@ -789,9 +790,8 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
             return Ok(());
         }
 
-        self.check_vtl_access(gpa, TranslateMode::Read, is_user_mode)?; // TODO: is this needed?
-
         if self.support.is_gpa_mapped(gpa, false) {
+            self.check_vtl_access(gpa, TranslateMode::Read, is_user_mode)?;
             self.gm.read_at(gpa, bytes).map_err(Error::Memory)?;
         } else {
             self.dev
@@ -814,9 +814,8 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
             return Ok(());
         }
 
-        self.check_vtl_access(gpa, TranslateMode::Write, is_user_mode)?;
-
         if self.support.is_gpa_mapped(gpa, true) {
+            self.check_vtl_access(gpa, TranslateMode::Write, is_user_mode)?;
             self.gm.write_at(gpa, bytes).map_err(Error::Memory)?;
         } else {
             self.dev
@@ -834,11 +833,11 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         is_user_mode: bool,
     ) -> Result<bool, Self::Error> {
         let gpa = self.translate_gva(gva, TranslateMode::Write, is_user_mode)?;
-        self.check_vtl_access(gpa, TranslateMode::Write, is_user_mode)?;
 
         let success = if self.support.check_monitor_write(gpa, new) {
             true
         } else if self.support.is_gpa_mapped(gpa, true) {
+            self.check_vtl_access(gpa, TranslateMode::Write, is_user_mode)?;
             let buf = &mut [0; 16][..current.len()];
             buf.copy_from_slice(current);
             self.gm

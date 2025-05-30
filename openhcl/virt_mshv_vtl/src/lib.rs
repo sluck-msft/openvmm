@@ -1376,6 +1376,7 @@ pub struct CvmLateParams {
 
 #[derive(Debug, Error)]
 #[error("vtl protections {protections:?} violated for vtl {vtl:?}")]
+/// Error type for when a VTL's protections are violated.
 pub struct VtlProtectionsViolation {
     /// The VTL whose protections were violated.
     pub vtl: Vtl,
@@ -1442,7 +1443,8 @@ pub trait ProtectIsolatedMemory: Send + Sync {
     /// and therefore whether these protections should be enforced.
     fn vtl1_protections_enabled(&self) -> bool;
 
-    ///
+    /// Checks whether a higher VTL has restricted the requesting VTL's access
+    /// to the page
     fn check_vtl_access(
         &self,
         vtl: GuestVtl,
