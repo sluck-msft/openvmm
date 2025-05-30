@@ -819,9 +819,8 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
             return Ok(());
         }
 
-        self.check_vtl_access(gpa, TranslateMode::Read)?;
-
         if self.support.is_gpa_mapped(gpa, false) {
+            self.check_vtl_access(gpa, TranslateMode::Read)?;
             self.gm.read_at(gpa, bytes).map_err(Error::Memory)?;
         } else {
             self.dev
@@ -844,9 +843,8 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
             return Ok(());
         }
 
-        self.check_vtl_access(gpa, TranslateMode::Write)?;
-
         if self.support.is_gpa_mapped(gpa, true) {
+            self.check_vtl_access(gpa, TranslateMode::Write)?;
             self.gm.write_at(gpa, bytes).map_err(Error::Memory)?;
         } else {
             self.dev
@@ -864,11 +862,11 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         is_user_mode: bool,
     ) -> Result<bool, Self::Error> {
         let gpa = self.translate_gva(gva, TranslateMode::Write, is_user_mode)?;
-        self.check_vtl_access(gpa, TranslateMode::Write)?;
 
         let success = if self.support.check_monitor_write(gpa, new) {
             true
         } else if self.support.is_gpa_mapped(gpa, true) {
+            self.check_vtl_access(gpa, TranslateMode::Write)?;
             let buf = &mut [0; 16][..current.len()];
             buf.copy_from_slice(current);
             self.gm

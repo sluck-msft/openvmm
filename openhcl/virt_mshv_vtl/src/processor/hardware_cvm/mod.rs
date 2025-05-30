@@ -54,7 +54,9 @@ use virt_support_x86emu::translate::TranslateCachingInfo;
 use virt_support_x86emu::translate::TranslationRegisters;
 use x86defs::cpuid;
 use x86defs::cpuid::CpuidFunction;
+use zerocopy::FromBytes;
 use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     fn validate_register_access(
@@ -1211,7 +1213,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::ModifyVtlProtectionMask
         // 0.
         protector.change_vtl_protections(
             GuestVtl::Vtl0,
-            gpa_pages,
+            gpa_pages, // TODO: Is this gpas or gpns?
             map_flags,
             &mut self.vp.tlb_flush_lock_access(),
         )
@@ -2118,12 +2120,17 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     ) -> bool {
         let send_intercept = self.cvm_is_protected_register_write(vtl, reg, value);
         if send_intercept {
-            let message_state = B::intercept_message_state(self, vtl, false);
+            let message_state = B::intercept_message_state(self, vtl, false, true);
 
             self.send_intercept_message(
                 GuestVtl::Vtl1,
                 &crate::processor::InterceptMessageType::Register { reg, value }
-                    .generate_hv_message(self.vp_index(), vtl, message_state, false),
+                    .generate_hv_message(
+                        self.vp_index(),
+                        vtl,
+                        message_state,
+                        hvdef::HvInterceptAccessType::WRITE,
+                    ),
             );
         }
 
@@ -2175,7 +2182,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             };
 
             if send_intercept {
-                let message_state = B::intercept_message_state(self, vtl, false);
+                let message_state = B::intercept_message_state(self, vtl, false, true);
 
                 self.send_intercept_message(
                     GuestVtl::Vtl1,
@@ -2183,7 +2190,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                         self.vp_index(),
                         vtl,
                         message_state,
-                        false,
+                        hvdef::HvInterceptAccessType::WRITE,
                     ),
                 );
 
@@ -2223,7 +2230,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             };
 
             if send_intercept {
-                let message_state = B::intercept_message_state(self, vtl, true);
+                let message_state = B::intercept_message_state(self, vtl, true, true);
 
                 self.send_intercept_message(
                     GuestVtl::Vtl1,
@@ -2237,7 +2244,11 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                         self.vp_index(),
                         vtl,
                         message_state,
-                        is_read,
+                        if is_read {
+                            hvdef::HvInterceptAccessType::READ
+                        } else {
+                            hvdef::HvInterceptAccessType::WRITE
+                        },
                     ),
                 );
 
@@ -2268,6 +2279,65 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 .request_interrupt(vector, false)
         }
         Ok(())
+    }
+
+    pub(crate) fn cvm_inject_emulation_pending_event(
+        &mut self,
+        emulating_vtl: GuestVtl,
+        event_info: hvdef::HvX64PendingEvent,
+    ) {
+        if event_info.reg_0.event_type() == hvdef::HV_X64_PENDING_EVENT_MEMORY_INTERCEPT {
+            let memory_event =
+                hvdef::HvX64PendingEventMemoryIntercept::read_from_bytes(event_info.as_bytes())
+                    .expect("memory event and pending event are the same size");
+            match Vtl::try_from(memory_event.target_vtl).unwrap() {
+                Vtl::Vtl0 => panic!("VTL 0 cannot put protections on itself"),
+                Vtl::Vtl1 => {
+                    tracing::debug!(
+                        "vtl 1 protections violated, sending vtl 1 a memory intercept message"
+                    );
+                    assert!(emulating_vtl == GuestVtl::Vtl0);
+                    let message_state =
+                        B::intercept_message_state(self, emulating_vtl, false, false);
+                    self.send_intercept_message(
+                        GuestVtl::Vtl1,
+                        &crate::processor::InterceptMessageType::Memory {
+                            gva: memory_event.guest_linear_address,
+                            gpa: memory_event.guest_physical_address,
+                            gva_valid: memory_event.access_flags.guest_linear_address_valid(),
+                        }
+                        .generate_hv_message(
+                            self.vp_index(),
+                            emulating_vtl,
+                            message_state,
+                            memory_event.access_type,
+                        ),
+                    );
+                }
+                Vtl::Vtl2 => {
+                    // The intercept is directed at openhcl itself, which is unrecoverable.
+                    tracing::debug!(
+                        "vtl 2 protections violated, sending a machine check to the guest."
+                    );
+                    let exception = HvX64PendingExceptionEvent::new()
+                        .with_event_pending(true)
+                        .with_event_type(hvdef::HV_X64_PENDING_EVENT_EXCEPTION)
+                        .with_vector(x86defs::Exception::MACHINE_CHECK.0 as u16);
+
+                    B::set_pending_exception(self, emulating_vtl, exception); // TODO: check vtl
+                }
+            }
+        } else {
+            assert_eq!(
+                event_info.reg_0.event_type(),
+                hvdef::HV_X64_PENDING_EVENT_EXCEPTION
+            );
+            let exception = HvX64PendingExceptionEvent::from(event_info.reg_0.into_bits());
+
+            // There's no interruption pending, so just inject the exception
+            // directly without checking for double fault.
+            B::set_pending_exception(self, emulating_vtl, exception); // TODO: check vtl
+        }
     }
 
     fn get_vsm_vp_secure_config_vtl(
@@ -2347,7 +2417,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         self.backing.cvm_state_mut().hv[target_vtl].set_return_reason(entry_reason);
     }
 
-    fn send_intercept_message(&mut self, vtl: GuestVtl, message: &hvdef::HvMessage) {
+    pub(crate) fn send_intercept_message(&mut self, vtl: GuestVtl, message: &hvdef::HvMessage) {
         tracing::trace!(?message, "sending intercept to {:?}", vtl);
 
         if let Err(e) = self.backing.cvm_state_mut().hv[vtl]

@@ -296,6 +296,11 @@ enum InterceptMessageType {
         string_access: bool,
         rep_access: bool,
     },
+    Memory {
+        gva: u64,
+        gpa: u64,
+        gva_valid: bool,
+    },
 }
 
 /// Per-arch state required to generate an intercept message.
@@ -312,6 +317,7 @@ struct InterceptMessageState {
     rcx: u64,
     rsi: u64,
     rdi: u64,
+    tpr: u8,
     optional: Option<InterceptMessageOptionalState>,
 }
 
@@ -331,16 +337,14 @@ impl InterceptMessageType {
         vp_index: VpIndex,
         vtl: GuestVtl,
         state: InterceptMessageState,
-        is_read: bool,
+        intercept_access_type: hvdef::HvInterceptAccessType,
     ) -> HvMessage {
+        use hvdef::HvCacheType;
+
         let header = hvdef::HvX64InterceptMessageHeader {
             vp_index: vp_index.index(),
             instruction_length_and_cr8: state.instruction_length_and_cr8,
-            intercept_access_type: if is_read {
-                hvdef::HvInterceptAccessType::READ
-            } else {
-                hvdef::HvInterceptAccessType::WRITE
-            },
+            intercept_access_type,
             execution_state: hvdef::HvX64VpExecutionState::new()
                 .with_cpl(state.cpl)
                 .with_vtl(vtl.into())
@@ -411,6 +415,30 @@ impl InterceptMessageType {
                     intercept_message.as_bytes(),
                 )
             }
+            InterceptMessageType::Memory {
+                gva,
+                gpa,
+                gva_valid,
+            } => {
+                let access_info = hvdef::HvX64MemoryAccessInfo::new().with_gva_valid(*gva_valid);
+                let intercept_message = hvdef::HvX64MemoryInterceptMessage {
+                    header,
+                    cache_type: HvCacheType::HvCacheTypeWriteBack, // TODO: why?
+                    instruction_byte_count: 0,
+                    memory_access_info: access_info,
+                    tpr_priority: state.tpr >> 4,
+                    reserved: 0,
+                    guest_virtual_address: *gva,
+                    guest_physical_address: *gpa,
+                    instruction_bytes: [0u8; 16], // TODO: why?
+                };
+
+                HvMessage::new(
+                    hvdef::HvMessageType::HvMessageTypeGpaIntercept,
+                    0,
+                    intercept_message.as_bytes(),
+                )
+            }
         }
     }
 }
@@ -465,6 +493,7 @@ trait HardwareIsolatedBacking: Backing {
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
         include_optional_state: bool,
+        calculate_instruction_length: bool, // TODO: consider making these flags?
     ) -> InterceptMessageState;
 
     /// Individual register for CPUID and crx intercept handling, since
