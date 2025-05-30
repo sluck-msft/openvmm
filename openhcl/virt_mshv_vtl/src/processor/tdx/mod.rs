@@ -3001,6 +3001,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         &mut self,
         _gpa: u64,
         _mode: TranslateMode,
+        _is_user_mode: bool,
     ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError<Self::Error>> {
         // Lock Vtl TLB
         // TODO TDX GUEST VSM: VTL1 not yet supported

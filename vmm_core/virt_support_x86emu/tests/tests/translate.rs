@@ -217,6 +217,7 @@ impl EmulatorSupport for MockSupport {
         &mut self,
         _gpa: u64,
         _mode: TranslateMode,
+        _is_user_mode: bool,
     ) -> Result<(), EmuCheckVtlAccessError<Self::Error>> {
         Ok(())
     }

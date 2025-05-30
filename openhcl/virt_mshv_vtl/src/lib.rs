@@ -1374,6 +1374,15 @@ pub struct CvmLateParams {
     pub private_dma_client: Arc<dyn DmaClient>,
 }
 
+#[derive(Debug, Error)]
+#[error("vtl protections {protections:?} violated for vtl {vtl:?}")]
+pub struct VtlProtectionsViolation {
+    /// The VTL whose protections were violated.
+    pub vtl: Vtl,
+    /// The protections that were violated.
+    pub protections: HvMapGpaFlags,
+}
+
 /// Trait for CVM-related protections on guest memory.
 pub trait ProtectIsolatedMemory: Send + Sync {
     /// Changes host visibility on guest memory.
@@ -1432,6 +1441,14 @@ pub trait ProtectIsolatedMemory: Send + Sync {
     /// Whether VTL 1 is prepared to modify vtl protections on lower-vtl memory,
     /// and therefore whether these protections should be enforced.
     fn vtl1_protections_enabled(&self) -> bool;
+
+    ///
+    fn check_vtl_access(
+        &self,
+        vtl: GuestVtl,
+        gpn: u64,
+        flags: HvMapGpaFlags,
+    ) -> Result<(), VtlProtectionsViolation>;
 }
 
 /// Trait for access to TLB flush and lock machinery.

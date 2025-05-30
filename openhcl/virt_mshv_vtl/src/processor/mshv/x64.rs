@@ -1218,6 +1218,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
         &mut self,
         gpa: u64,
         mode: virt_support_x86emu::emulate::TranslateMode,
+        _is_user_mode: bool,
     ) -> Result<(), EmuCheckVtlAccessError<Self::Error>> {
         // Underhill currently doesn't set VTL 2 protections against execute exclusively, it removes
         // all permissions from a page. So for VTL 1, no need to check the permissions; if VTL 1

@@ -977,6 +977,7 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         &mut self,
         _gpa: u64,
         _mode: TranslateMode,
+        _is_user_mode: bool,
     ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError<Self::Error>> {
         // TODO: No VTL2 supported so always return Ok.
         Ok(())

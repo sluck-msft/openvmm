@@ -46,6 +46,7 @@ use thiserror::Error;
 use virt::IsolationType;
 use virt_mshv_vtl::ProtectIsolatedMemory;
 use virt_mshv_vtl::TlbFlushLockAccess;
+use virt_mshv_vtl::VtlProtectionsViolation;
 use vm_topology::memory::MemoryLayout;
 use x86defs::snp::SevRmpAdjust;
 use x86defs::tdx::GpaVmAttributes;
@@ -938,5 +939,39 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
     fn vtl1_protections_enabled(&self) -> bool {
         self.vtl1_protections_enabled
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn check_vtl_access(
+        &self,
+        vtl: GuestVtl,
+        gpn: u64,
+        flags: HvMapGpaFlags,
+    ) -> Result<(), VtlProtectionsViolation> {
+        // TODO: synchronize?
+        // TODO: send memory intercept
+
+        if vtl == GuestVtl::Vtl0 {
+            if let Ok(permissions) = self.vtl0.query_access_permission(gpn) {
+                if flags != permissions {
+                    return Err(VtlProtectionsViolation {
+                        vtl: Vtl::Vtl1,
+                        protections: HvMapGpaFlags::from(
+                            flags.into_bits() & permissions.into_bits(),
+                        ),
+                    });
+                }
+            }
+        }
+
+        // Check VTL 2 protections
+        let inner = self.inner.lock();
+        if !inner.valid_encrypted.check_valid(gpn) && !inner.valid_shared.check_valid(gpn) {
+            return Err(VtlProtectionsViolation {
+                vtl: Vtl::Vtl2,
+                protections: flags,
+            });
+        }
+
+        Ok(())
     }
 }

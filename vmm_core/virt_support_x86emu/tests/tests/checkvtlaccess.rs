@@ -83,14 +83,15 @@ impl EmulatorSupport for MockSupport {
         &mut self,
         _gpa: u64,
         mode: TranslateMode,
+        is_user_mode: bool,
     ) -> Result<(), EmuCheckVtlAccessError<Self::Error>> {
         if let Some(vtl) = self.fail_vtl_access {
             let flags = match mode {
                 TranslateMode::Read => hvdef::HvMapGpaFlags::new().with_readable(true),
                 TranslateMode::Write => hvdef::HvMapGpaFlags::new().with_writable(true),
                 TranslateMode::Execute => hvdef::HvMapGpaFlags::new()
-                    .with_kernel_executable(true)
-                    .with_user_executable(true),
+                    .with_kernel_executable(!is_user_mode)
+                    .with_user_executable(is_user_mode),
             };
 
             return Err(EmuCheckVtlAccessError::AccessDenied {

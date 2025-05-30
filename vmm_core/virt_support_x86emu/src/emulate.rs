@@ -90,6 +90,7 @@ pub trait EmulatorSupport {
         &mut self,
         gpa: u64,
         mode: TranslateMode,
+        is_user_mode: bool,
     ) -> Result<(), EmuCheckVtlAccessError<Self::Error>>;
 
     /// Translates a GVA to a GPA.
@@ -351,7 +352,9 @@ pub async fn emulate<T: EmulatorSupport>(
                     }
                 };
 
-                if let Err(err) = cpu.check_vtl_access(phys_ip, TranslateMode::Execute) {
+                if let Err(err) =
+                    cpu.check_vtl_access(phys_ip, TranslateMode::Execute, is_user_mode)
+                {
                     if inject_memory_access_fault(linear_ip, &err, support) {
                         return Ok(());
                     } else {
@@ -755,9 +758,10 @@ impl<T: EmulatorSupport, U> EmulatorCpu<'_, T, U> {
         &mut self,
         gpa: u64,
         mode: TranslateMode,
+        is_user_mode: bool,
     ) -> Result<(), Error<T::Error>> {
         self.support
-            .check_vtl_access(gpa, mode)
+            .check_vtl_access(gpa, mode, is_user_mode)
             .map_err(|e| match e {
                 EmuCheckVtlAccessError::Hypervisor(hv_err) => Error::Hypervisor(hv_err),
                 EmuCheckVtlAccessError::AccessDenied { vtl, denied_flags } => Error::NoVtlAccess {
@@ -785,7 +789,7 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
             return Ok(());
         }
 
-        self.check_vtl_access(gpa, TranslateMode::Read)?;
+        self.check_vtl_access(gpa, TranslateMode::Read, is_user_mode)?; // TODO: is this needed?
 
         if self.support.is_gpa_mapped(gpa, false) {
             self.gm.read_at(gpa, bytes).map_err(Error::Memory)?;
@@ -810,7 +814,7 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
             return Ok(());
         }
 
-        self.check_vtl_access(gpa, TranslateMode::Write)?;
+        self.check_vtl_access(gpa, TranslateMode::Write, is_user_mode)?;
 
         if self.support.is_gpa_mapped(gpa, true) {
             self.gm.write_at(gpa, bytes).map_err(Error::Memory)?;
@@ -830,7 +834,7 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         is_user_mode: bool,
     ) -> Result<bool, Self::Error> {
         let gpa = self.translate_gva(gva, TranslateMode::Write, is_user_mode)?;
-        self.check_vtl_access(gpa, TranslateMode::Write)?;
+        self.check_vtl_access(gpa, TranslateMode::Write, is_user_mode)?;
 
         let success = if self.support.check_monitor_write(gpa, new) {
             true

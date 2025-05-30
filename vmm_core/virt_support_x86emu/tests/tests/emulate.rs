@@ -79,6 +79,7 @@ impl EmulatorSupport for MockSupport {
         &mut self,
         _gpa: u64,
         _mode: virt_support_x86emu::emulate::TranslateMode,
+        _is_user_mode: bool,
     ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError<Self::Error>> {
         Ok(())
     }

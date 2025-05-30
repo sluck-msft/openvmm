@@ -1776,12 +1776,18 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
 
     fn check_vtl_access(
         &mut self,
-        _gpa: u64,
-        _mode: virt_support_x86emu::emulate::TranslateMode,
+        gpa: u64,
+        mode: virt_support_x86emu::emulate::TranslateMode,
+        is_user_mode: bool,
     ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError<Self::Error>> {
-        // TODO GUEST VSM
-        // TODO lock tlb?
-        Ok(())
+        self.vp
+            .cvm_check_vtl_access(gpa, self.vtl, mode, is_user_mode)
+            .map_err(
+                |err| virt_support_x86emu::emulate::EmuCheckVtlAccessError::AccessDenied {
+                    vtl: err.vtl,
+                    denied_flags: err.protections,
+                },
+            )
     }
 
     fn translate_gva(

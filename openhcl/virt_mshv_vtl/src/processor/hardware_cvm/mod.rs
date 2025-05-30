@@ -15,6 +15,7 @@ use crate::GuestVtl;
 use crate::InitialVpContextOperation;
 use crate::TlbFlushLockAccess;
 use crate::VpStartEnableVtl;
+use crate::VtlProtectionsViolation;
 use crate::WakeReason;
 use crate::processor::HardwareIsolatedBacking;
 use crate::processor::UhHypercallHandler;
@@ -2424,6 +2425,45 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             });
 
         self.request_sint_notifications(vtl, pending_sints);
+    }
+
+    /// Check for VTL 0 violating any VTL 1 execute protections on a gpa
+    pub(crate) fn cvm_check_vtl_access(
+        &self,
+        gpa: u64,
+        vtl: GuestVtl,
+        mode: virt_support_x86emu::emulate::TranslateMode,
+        is_user_mode: bool,
+    ) -> Result<(), VtlProtectionsViolation> {
+        // Should always be called after translate gva with the tlb lock flag
+        debug_assert!(self.vtls_tlb_locked.get(Vtl::Vtl2, vtl));
+        let flags = match mode {
+            virt_support_x86emu::emulate::TranslateMode::Read => {
+                HvMapGpaFlags::new().with_readable(true)
+            }
+            virt_support_x86emu::emulate::TranslateMode::Write => {
+                HvMapGpaFlags::new().with_writable(true)
+            }
+            virt_support_x86emu::emulate::TranslateMode::Execute => {
+                if let GuestVsmState::Enabled { vtl1 } = &*self.cvm_partition().guest_vsm.read() {
+                    if vtl1.mbec_enabled && is_user_mode {
+                        HvMapGpaFlags::new().with_user_executable(true)
+                    } else {
+                        HvMapGpaFlags::new().with_kernel_executable(true)
+                    }
+                } else {
+                    HvMapGpaFlags::new().with_kernel_executable(true)
+                }
+            }
+        };
+
+        let op = || {
+            self.cvm_partition()
+                .isolated_memory_protector
+                .check_vtl_access(GuestVtl::Vtl0, gpa / hvdef::HV_PAGE_SIZE, flags)
+        };
+
+        guestmem::rcu().run(op)
     }
 }
 
