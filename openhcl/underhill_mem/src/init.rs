@@ -212,7 +212,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
         tracing::debug!("Building valid encrypted memory view");
         let encrypted_memory_view = {
-            let _span = tracing::info_span!("create encrypted memory view").entered();
+            let _span = tracing::info_span!("create encrypted memory view", CVM_ALLOWED).entered();
             GuestPartitionMemoryView::new(params.mem_layout, true)?
         };
 
@@ -292,7 +292,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         tracing::debug!("Building shared memory map");
 
         let shared_memory_view = {
-            let _span = tracing::info_span!("create shared memory view").entered();
+            let _span = tracing::info_span!("create shared memory view", CVM_ALLOWED).entered();
             GuestPartitionMemoryView::new(params.complete_memory_layout, false)?
         };
 
