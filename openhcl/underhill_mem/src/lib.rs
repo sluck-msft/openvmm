@@ -221,7 +221,7 @@ impl MemoryAcceptor {
         })
     }
 
-    /// Accept pages for VTL0.
+    /// Accept pages for lower VTLs.
     pub fn accept_lower_vtl_pages(&self, range: MemoryRange) -> Result<(), AcceptPagesError> {
         match self.isolation {
             IsolationType::None => unreachable!(),
@@ -487,12 +487,12 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         // page is becoming shared, make sure the requesting VTL has read/write
         // vtl permissions to the page.
         let orig_gpns = gpns;
-        let mut vtl_permission_failure = false;
+        let mut failed_vtl_permission_index = None;
         let gpns = gpns
             .iter()
             .copied()
-            .filter(|&gpn| inner.valid_shared.check_valid(gpn) != shared)
-            .take_while(|&gpn| {
+            .enumerate()
+            .take_while(|&(index, gpn)| {
                 if vtl == GuestVtl::Vtl0 && shared && self.vtl1_protections_enabled() {
                     let permissions = self
                         .vtl0
@@ -500,13 +500,20 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                         .expect("vtl 1 protections enabled, vtl permissions should be tracked");
                     if !permissions.readable() || !permissions.writable() {
                         // TODO GUEST VSM: should this send a memory intercept instead?
-                        vtl_permission_failure = true;
+                        failed_vtl_permission_index = Some(index);
                         false
                     } else {
                         true
                     }
                 } else {
                     true
+                }
+            })
+            .filter_map(|(_, gpn)| {
+                if inner.valid_shared.check_valid(gpn) != shared {
+                    Some(gpn)
+                } else {
+                    None
                 }
             })
             .collect::<Vec<_>>();
@@ -578,19 +585,9 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                 // All gpns succeeded, so the whole set of ranges should be
                 // processed.
                 (
-                    if vtl_permission_failure {
-                        // Figure out the index of the last gpn that succeeded
-                        // the vtl permission check in the pre-filtered list to
-                        // report the first failed gpn that will be reported
-                        // back to the caller.
-                        let last_succeeded_index = orig_gpns
-                            .iter()
-                            .position(|gpn| *gpn == *gpns.last().unwrap())
-                            .expect("failed gpn should be present in the list");
-                        assert!(last_succeeded_index + 1 < orig_gpns.len());
-                        Err((HvError::AccessDenied, last_succeeded_index + 1))
-                    } else {
-                        Ok(())
+                    match failed_vtl_permission_index {
+                        Some(index) => Err((HvError::AccessDenied, index)),
+                        None => Ok(()),
                     },
                     ranges,
                 )

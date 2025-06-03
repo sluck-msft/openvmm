@@ -117,8 +117,6 @@ impl GuestValidMemory {
         guestmem::BitmapInfo {
             read_bitmap: ptr,
             write_bitmap: ptr,
-            kernel_execute_bitmap: ptr,
-            user_execute_bitmap: ptr,
             bit_offset: 0,
         }
     }
@@ -555,23 +553,24 @@ unsafe impl GuestMemoryAccess for GuestMemoryMapping {
         // When the permissions bitmaps are available, they take precedence and
         // therefore should be no more permissive than the access bitmap.
         //
-        // Note: there's currently not a good way of supporting no enforcement
-        // of vtl 1 protections (e.g. if VTL 1 never enables vtl protections via
-        // the vsm partition config, but it still makes hypercalls to modify the
-        // vtl protection mask, these protections will still be enforced), as
-        // the related guest memory objects are initialized before VTL 1 can
-        // make any hypercalls related to vtl protections. In practice, a
-        // well-designed VTL 1 probably would enable vtl protections if it does
-        // change the permissions on any VTL 0 memory before it allows VTL 0 to
-        // run again.
+        // TODO GUEST VSM: consider being able to dynamically update these
+        // bitmaps. There are two scenarios where this would be useful:
+        // 1. To reduce memory consumption in cases where the bitmaps aren't
+        //    needed, i.e. the guest chooses not to enable guest vsm and VTL 1
+        //    gets revoked.
+        // 2. Because the related guest memory objects are initialized before
+        // VTL 1 is, the code as it currently stands will always enforce vtl 1
+        // protections even if VTL 1 hasn't explicitly enabled it. e.g. if VTL 1
+        // never enables vtl protections via the vsm partition config, but it
+        // still makes hypercalls to modify the vtl protection mask (this is a
+        // valid scenario to help set up default protections), these protections
+        // will still be enforced. In practice, a well-designed VTL 1 probably
+        // would enable vtl protections before allowing VTL 0 to run again, but
+        // technically the implementation here is not to spec.
         if let Some(bitmaps) = self.permission_bitmaps.as_ref() {
             Some(guestmem::BitmapInfo {
                 read_bitmap: NonNull::new(bitmaps.read_bitmap.as_ptr().cast()).unwrap(),
                 write_bitmap: NonNull::new(bitmaps.write_bitmap.as_ptr().cast()).unwrap(),
-                kernel_execute_bitmap: NonNull::new(bitmaps.kernel_execute_bitmap.as_ptr().cast())
-                    .unwrap(),
-                user_execute_bitmap: NonNull::new(bitmaps.user_execute_bitmap.as_ptr().cast())
-                    .unwrap(),
                 bit_offset: 0,
             })
         } else {

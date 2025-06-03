@@ -401,6 +401,8 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             acceptor.as_ref().unwrap().clone(),
         )) as Arc<dyn ProtectIsolatedMemory>;
 
+        // TODO GUEST VSM: create guest memory objects using execute permissions
+        // for the instruction emulator to use when reading instructions.
         MemoryMappings {
             vtl0: vtl0_mapping,
             vtl1: vtl1_mapping,
