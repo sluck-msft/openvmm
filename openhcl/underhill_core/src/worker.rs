@@ -1764,6 +1764,16 @@ async fn new_underhill_vm(
             gm.vtl1().cloned().unwrap_or(GuestMemory::empty()),
         ]
         .into(),
+        kx_gm: [
+            gm.vtl0_kx().clone(),
+            gm.vtl1().cloned().unwrap_or(GuestMemory::empty()), // TODO: unnecessary
+        ]
+        .into(),
+        ux_gm: [
+            gm.vtl0_ux().clone(),
+            gm.vtl1().cloned().unwrap_or(GuestMemory::empty()),
+        ]
+        .into(),
         #[cfg(guest_arch = "x86_64")]
         cpuid,
         crash_notification_send,

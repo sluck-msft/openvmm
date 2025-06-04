@@ -182,7 +182,7 @@ async fn run_emulation(
         gm.write_at(support.state.rip, &instruction_bytes).unwrap();
     }
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &gm, &gm, &MockCpu).await.unwrap();
 
     if fail_vtl_access.is_none() {
         assert_eq!(support.gp(Gp::RAX), TEST_VALUE);

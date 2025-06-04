@@ -36,6 +36,7 @@ use hvdef::hypercall::AcceptMemoryType;
 use hvdef::hypercall::HostVisibilityType;
 use hvdef::hypercall::HvInputVtl;
 use mapping::GuestMemoryMapping;
+use mapping::GuestMemoryViewReadAccessType;
 use mapping::GuestValidMemory;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;

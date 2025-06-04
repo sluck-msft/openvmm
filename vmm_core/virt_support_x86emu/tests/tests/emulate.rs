@@ -156,7 +156,7 @@ async fn basic_mov() {
         interruption_pending: false,
     };
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &gm, &gm, &MockCpu).await.unwrap();
 
     assert_eq!(support.gp(Gp::RAX), TEST_VALUE);
 }
@@ -188,7 +188,7 @@ async fn not_enough_bytes() {
 
     gm.write_at(support.state.rip, &instruction_bytes).unwrap();
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &gm, &gm, &MockCpu).await.unwrap();
 
     assert_eq!(support.gp(Gp::RAX), TEST_VALUE);
 }
@@ -218,7 +218,7 @@ async fn trap_from_interrupt() {
         interruption_pending: true,
     };
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &gm, &gm, &MockCpu).await.unwrap();
 }
 
 #[async_test]
@@ -249,5 +249,5 @@ async fn trap_from_debug() {
         interruption_pending: false,
     };
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &gm, &gm, &MockCpu).await.unwrap();
 }
