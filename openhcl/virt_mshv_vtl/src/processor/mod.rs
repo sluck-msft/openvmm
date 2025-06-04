@@ -1153,11 +1153,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         for<'b> UhEmulationState<'b, 'a, D, T>:
             virt_support_x86emu::emulate::EmulatorSupport<Error = UhRunVpError>,
     {
-        use virt_support_x86emu::emulate::EmulatorSupport;
-
         let guest_memory = &self.partition.gm[vtl];
-        let ux_gm = &self.partition.ux_gm[vtl];
-        let kx_gm = &self.partition.kx_gm[vtl];
         let mut emulation_state = UhEmulationState {
             vp: &mut *self,
             interruption_pending,
@@ -1165,23 +1161,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             vtl,
             cache,
         };
-        // TODO: cleanup getting whether it's usermode
-        let is_user_mode = emulation_state
-            .segment(x86emu::Segment::SS)
-            .attributes
-            .descriptor_privilege_level()
-            == x86defs::USER_MODE_DPL;
-
-        // TODO: clean this up.
-        let ex_guest_memory = if is_user_mode { ux_gm } else { kx_gm };
-
-        virt_support_x86emu::emulate::emulate(
-            &mut emulation_state,
-            guest_memory,
-            ex_guest_memory,
-            devices,
-        )
-        .await
+        virt_support_x86emu::emulate::emulate(&mut emulation_state, guest_memory, devices).await
     }
 
     /// Emulates an instruction due to a memory access exit.

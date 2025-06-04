@@ -277,7 +277,6 @@ enum EmulationError<E> {
 pub async fn emulate<T: EmulatorSupport>(
     support: &mut T,
     gm: &GuestMemory,
-    ex_gm: &GuestMemory,
     dev: &impl CpuIo,
 ) -> Result<(), VpHaltReason<T::Error>> {
     let vendor = support.vendor();
@@ -371,7 +370,9 @@ pub async fn emulate<T: EmulatorSupport>(
                 let len = (bytes.len() - valid_bytes)
                     .min((HV_PAGE_SIZE - (phys_ip & (HV_PAGE_SIZE - 1))) as usize);
 
-                if let Err(err) = ex_gm.read_at(phys_ip, &mut bytes[valid_bytes..valid_bytes + len])
+                if let Err(err) = cpu
+                    .gm
+                    .read_at(phys_ip, &mut bytes[valid_bytes..valid_bytes + len])
                 {
                     tracing::error!(error = &err as &dyn std::error::Error, "read failed");
                     support.inject_pending_event(gpf_event());

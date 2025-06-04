@@ -348,7 +348,7 @@ async fn basic_translate_gva() {
         &gm,
     );
 
-    emulate(&mut support, &gm, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &gm, &MockCpu).await.unwrap();
 
     assert_eq!(support.accessed_value(), TEST_VALUE);
     assert!(
@@ -404,7 +404,7 @@ async fn translate_gva_page_faults() {
         );
 
         assert!(
-            emulate(&mut support, &gm, &gm, &MockCpu).await.is_ok(),
+            emulate(&mut support, &gm, &MockCpu).await.is_ok(),
             "emulation failed for error code {:?}",
             c
         );
@@ -483,7 +483,7 @@ async fn translate_gva_protection_faults() {
         );
 
         assert!(
-            emulate(&mut support, &gm, &gm, &MockCpu).await.is_ok(),
+            emulate(&mut support, &gm, &MockCpu).await.is_ok(),
             "emulation failed for error code {:?}",
             c
         );
@@ -516,7 +516,7 @@ async fn translate_gva_intercept() {
         &gm,
     );
 
-    emulate(&mut support, &gm, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &gm, &MockCpu).await.unwrap();
 
     let injected_event = support.injected_event().unwrap();
 
@@ -549,7 +549,7 @@ async fn initial_gva_translation() {
         &gm,
     );
 
-    emulate(&mut support, &gm, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &gm, &MockCpu).await.unwrap();
     assert_eq!(support.accessed_value(), INITIAL_GPA_VALUE);
     assert!(
         support.injected_event().is_none(),
@@ -573,7 +573,7 @@ async fn initial_gva_translation() {
     gm.write_at(INITIAL_GPA + OFFSET, OFFSET_VALUE.as_bytes())
         .unwrap();
 
-    emulate(&mut support, &gm, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &gm, &MockCpu).await.unwrap();
     assert_eq!(support.accessed_value(), OFFSET_VALUE);
     assert!(
         support.injected_event().is_none(),
@@ -608,7 +608,7 @@ async fn initial_gva_translation_misses() {
         &gm,
     );
 
-    emulate(&mut support, &gm, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &gm, &MockCpu).await.unwrap();
     assert!(support.injected_event().is_none());
 
     let mut mem_val = [0; 8];
@@ -638,7 +638,7 @@ async fn initial_gva_translation_misses() {
     let instruction_bytes = asm.assemble(support.state.rip).unwrap();
     gm.write_at(INITIAL_GPA, &instruction_bytes).unwrap();
 
-    emulate(&mut support, &gm, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &gm, &MockCpu).await.unwrap();
     assert!(support.injected_event().is_none());
     assert_eq!(support.accessed_value(), CORRECT_VALUE);
 }
@@ -662,7 +662,7 @@ async fn translate_gva_overlay_page() {
         &gm,
     );
 
-    assert!(emulate(&mut support, &gm, &gm, &MockCpu).await.is_ok());
+    assert!(emulate(&mut support, &gm, &MockCpu).await.is_ok());
 
     assert!(
         support.injected_event().is_some(),

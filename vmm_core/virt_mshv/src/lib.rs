@@ -463,13 +463,7 @@ impl MshvProcessor<'_> {
             interruption_pending,
             cache,
         };
-        virt_support_x86emu::emulate::emulate(
-            &mut support,
-            &self.partition.gm,
-            &self.partition.gm,
-            devices,
-        )
-        .await
+        virt_support_x86emu::emulate::emulate(&mut support, &self.partition.gm, devices).await
     }
 
     async fn handle_io_port_intercept(

@@ -6,8 +6,6 @@
 use crate::HardwareIsolatedMemoryProtector;
 use crate::MemoryAcceptor;
 use crate::mapping::GuestMemoryMapping;
-use crate::mapping::GuestMemoryView;
-use crate::mapping::GuestMemoryViewReadAccessType;
 use crate::mapping::GuestPartitionMemoryView;
 use anyhow::Context;
 use cvm_tracing::CVM_ALLOWED;
@@ -36,11 +34,7 @@ pub struct MemoryMappings {
     vtl0: Arc<GuestMemoryMapping>,
     vtl1: Option<Arc<GuestMemoryMapping>>,
     #[inspect(skip)]
-    vtl0_rw_gm: GuestMemory,
-    #[inspect(skip)]
-    vtl0_kx_gm: GuestMemory,
-    #[inspect(skip)]
-    vtl0_ux_gm: GuestMemory,
+    vtl0_gm: GuestMemory,
     #[inspect(skip)]
     vtl1_gm: Option<GuestMemory>,
     #[inspect(flatten)]
@@ -64,15 +58,7 @@ pub struct CvmMemory {
 impl MemoryMappings {
     /// Includes all VTL0-accessible memory (private and shared).
     pub fn vtl0(&self) -> &GuestMemory {
-        &self.vtl0_rw_gm
-    }
-
-    pub fn vtl0_kx(&self) -> &GuestMemory {
-        &self.vtl0_kx_gm
-    }
-
-    pub fn vtl0_ux(&self) -> &GuestMemory {
-        &self.vtl0_ux_gm
+        &self.vtl0_gm
     }
 
     pub fn vtl1(&self) -> Option<&GuestMemory> {
@@ -344,57 +330,11 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 .context("failed to map shared memory")?
         });
 
-        // let shared_view = GuestMemoryView {
-        //     memory_mapping: shared_mapping.clone(),
-        //     read_access_type: GuestMemoryViewReadAccessType::ReadWrite,
-        // };
-
         tracing::debug!("Creating VTL0 guest memory");
-        let vtl0_rw_gm = GuestMemory::new_multi_region(
+        let vtl0_gm = GuestMemory::new_multi_region(
             "vtl0",
             vtom,
-            vec![
-                Some(GuestMemoryView {
-                    memory_mapping: vtl0_mapping.clone(),
-                    read_access_type: GuestMemoryViewReadAccessType::ReadWrite,
-                }),
-                Some(GuestMemoryView {
-                    memory_mapping: shared_mapping.clone(),
-                    read_access_type: GuestMemoryViewReadAccessType::ReadWrite,
-                }),
-            ],
-        )
-        .context("failed to make vtl0 guest memory")?;
-
-        let vtl0_kx_gm = GuestMemory::new_multi_region(
-            "vtl0",
-            vtom,
-            vec![
-                Some(GuestMemoryView {
-                    memory_mapping: vtl0_mapping.clone(),
-                    read_access_type: GuestMemoryViewReadAccessType::KernelExecute,
-                }),
-                Some(GuestMemoryView {
-                    memory_mapping: shared_mapping.clone(),
-                    read_access_type: GuestMemoryViewReadAccessType::ReadWrite,
-                }),
-            ],
-        )
-        .context("failed to make vtl0 guest memory")?;
-
-        let vtl0_ux_gm = GuestMemory::new_multi_region(
-            "vtl0",
-            vtom,
-            vec![
-                Some(GuestMemoryView {
-                    memory_mapping: vtl0_mapping.clone(),
-                    read_access_type: GuestMemoryViewReadAccessType::UserExecute,
-                }),
-                Some(GuestMemoryView {
-                    memory_mapping: shared_mapping.clone(),
-                    read_access_type: GuestMemoryViewReadAccessType::ReadWrite,
-                }),
-            ],
+            vec![Some(vtl0_mapping.clone()), Some(shared_mapping.clone())],
         )
         .context("failed to make vtl0 guest memory")?;
 
@@ -410,14 +350,8 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                         "vtl1",
                         vtom,
                         vec![
-                            Some(GuestMemoryView {
-                                memory_mapping: encrypted_mapping.clone(),
-                                read_access_type: GuestMemoryViewReadAccessType::ReadWrite,
-                            }),
-                            Some(GuestMemoryView {
-                                memory_mapping: shared_mapping.clone(),
-                                read_access_type: GuestMemoryViewReadAccessType::ReadWrite,
-                            }),
+                            Some(encrypted_mapping.clone()),
+                            Some(shared_mapping.clone()),
                         ],
                     )
                     .context("failed to make vtl1 guest memory")?,
@@ -439,7 +373,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
             tracing::debug!("zeroing lower vtl memory for SNP");
             for range in validated_ranges {
-                vtl0_rw_gm
+                vtl0_gm
                     .fill_at(range.start(), 0, range.len() as usize)
                     .expect("private memory should be valid at this stage");
             }
@@ -452,26 +386,11 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         let shared_gm = GuestMemory::new_multi_region(
             "shared",
             vtom,
-            vec![
-                Some(GuestMemoryView {
-                    memory_mapping: shared_mapping.clone(),
-                    read_access_type: GuestMemoryViewReadAccessType::ReadWrite,
-                }),
-                Some(GuestMemoryView {
-                    memory_mapping: shared_mapping.clone(),
-                    read_access_type: GuestMemoryViewReadAccessType::ReadWrite,
-                }),
-            ],
+            vec![Some(shared_mapping.clone()), Some(shared_mapping.clone())],
         )
         .context("failed to make shared guest memory")?;
 
-        let private_vtl0_memory = GuestMemory::new(
-            "trusted",
-            GuestMemoryView {
-                memory_mapping: vtl0_mapping.clone(),
-                read_access_type: GuestMemoryViewReadAccessType::ReadWrite,
-            },
-        );
+        let private_vtl0_memory = GuestMemory::new("trusted", vtl0_mapping.clone());
 
         let protector = Arc::new(HardwareIsolatedMemoryProtector::new(
             encrypted_memory_view.partition_valid_memory().clone(),
@@ -487,9 +406,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         MemoryMappings {
             vtl0: vtl0_mapping,
             vtl1: vtl1_mapping,
-            vtl0_rw_gm,
-            vtl0_kx_gm,
-            vtl0_ux_gm,
+            vtl0_gm,
             vtl1_gm,
             cvm_memory: Some(CvmMemory {
                 shared_gm,
@@ -513,13 +430,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                     .context("failed to map vtl0 memory")?,
             )
         };
-        let vtl0_gm = GuestMemory::new(
-            "vtl0",
-            GuestMemoryView {
-                memory_mapping: vtl0_mapping.clone(),
-                read_access_type: GuestMemoryViewReadAccessType::ReadWrite,
-            },
-        );
+        let vtl0_gm = GuestMemory::new("vtl0", vtl0_mapping.clone());
 
         let vtl1_mapping = if params.maximum_vtl >= Vtl::Vtl1 {
             if params.vtl0_alias_map_bit.is_none() {
@@ -561,25 +472,16 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
         let vtl1_gm = if let Some(vtl1_mapping) = &vtl1_mapping {
             tracing::info!(CVM_ALLOWED, "VTL 1 memory map created");
-            Some(GuestMemory::new(
-                "vtl1",
-                GuestMemoryView {
-                    memory_mapping: vtl1_mapping.clone(),
-                    read_access_type: GuestMemoryViewReadAccessType::ReadWrite,
-                },
-            ))
+            Some(GuestMemory::new("vtl1", vtl1_mapping.clone()))
         } else {
             tracing::info!(CVM_ALLOWED, "Skipping VTL 1 memory map creation");
             None
         };
 
-        // TODO: create guest memory objects that can query the hypervisor for vtl execute permissions on read fallback
         MemoryMappings {
             vtl0: vtl0_mapping,
             vtl1: vtl1_mapping,
-            vtl0_rw_gm: vtl0_gm.clone(),
-            vtl0_kx_gm: vtl0_gm.clone(),
-            vtl0_ux_gm: vtl0_gm.clone(),
+            vtl0_gm,
             vtl1_gm,
             cvm_memory: None,
         }
