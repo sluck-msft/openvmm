@@ -397,7 +397,9 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
         None
     }
 
-    /// Similar to access_bitmap, for execute access
+    /// Similar to access_bitmap, but uses the execute permission bitmap in
+    /// place of the read bitmap, e.g. for checking permissions for instruction
+    /// retrieval.
     #[cfg(feature = "bitmap")]
     fn execute_access_bitmap(&self, _access_type: ExecuteAccessType) -> Option<BitmapInfo> {
         None
@@ -1087,6 +1089,10 @@ impl MemoryRegion {
             let bitmap_start = bitmap_info.map_or(0, |bi| bi.bit_offset);
             (bitmaps, bitmap_start)
         };
+
+        #[cfg(not(feature = "bitmap"))]
+        let _ = for_execute;
+
         Self {
             mapping: imp.mapping().map(SendPtrU8),
             #[cfg(feature = "bitmap")]

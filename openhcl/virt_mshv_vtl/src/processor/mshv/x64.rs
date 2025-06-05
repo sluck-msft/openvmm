@@ -1352,10 +1352,6 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
             .expect("set_vp_registers hypercall for setting pending event should not fail");
     }
 
-    fn instruction_guest_memory(&self, _is_user_mode: bool) -> &guestmem::GuestMemory {
-        &self.vp.partition.gm[self.vtl]
-    }
-
     fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
         self.vp
             .partition
