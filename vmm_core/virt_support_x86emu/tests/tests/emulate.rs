@@ -16,6 +16,7 @@ use x86emu::Gp;
 use x86emu::Segment;
 
 struct MockSupport {
+    gm: GuestMemory,
     state: CpuState,
     instruction_bytes: Vec<u8>,
     interruption_pending: bool,
@@ -114,6 +115,10 @@ impl EmulatorSupport for MockSupport {
         todo!()
     }
 
+    fn instruction_guest_memory(&self, _is_user_mode: bool) -> &GuestMemory {
+        &self.gm
+    }
+
     fn is_gpa_mapped(&self, _gpa: u64, _write: bool) -> bool {
         true
     }
@@ -150,6 +155,7 @@ async fn basic_mov() {
     let instruction_bytes = asm.assemble(0).unwrap();
 
     let mut support = MockSupport {
+        gm: gm.clone(),
         state: long_protected_mode(false),
         instruction_bytes,
         interruption_pending: false,
@@ -180,6 +186,7 @@ async fn not_enough_bytes() {
     assert!(instruction_bytes.len() > 2);
 
     let mut support = MockSupport {
+        gm: gm.clone(),
         state: long_protected_mode(false),
         instruction_bytes: instruction_bytes[..2].into(),
         interruption_pending: false,
@@ -212,6 +219,7 @@ async fn trap_from_interrupt() {
     let instruction_bytes = asm.assemble(0).unwrap();
 
     let mut support = MockSupport {
+        gm: gm.clone(),
         state: long_protected_mode(false),
         instruction_bytes,
         interruption_pending: true,
@@ -243,6 +251,7 @@ async fn trap_from_debug() {
     state.rflags.set_trap(true);
 
     let mut support = MockSupport {
+        gm: gm.clone(),
         state,
         instruction_bytes,
         interruption_pending: false,

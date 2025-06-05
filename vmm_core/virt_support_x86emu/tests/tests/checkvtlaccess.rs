@@ -19,6 +19,7 @@ use zerocopy::IntoBytes;
 /// failing vtl permissions checks and checking the resulting injected
 /// event
 struct MockSupport {
+    gm: GuestMemory,
     state: CpuState,
     instruction_bytes: Vec<u8>,
     fail_vtl_access: Option<Vtl>,
@@ -131,6 +132,10 @@ impl EmulatorSupport for MockSupport {
         self.injected_event = Some(event_info);
     }
 
+    fn instruction_guest_memory(&self, _is_user_mode: bool) -> &GuestMemory {
+        &self.gm
+    }
+
     fn is_gpa_mapped(&self, _gpa: u64, _write: bool) -> bool {
         true
     }
@@ -171,6 +176,7 @@ async fn run_emulation(
     };
 
     let mut support = MockSupport {
+        gm: gm.clone(),
         state: long_protected_mode(false),
         instruction_bytes: truncated_instructions,
         fail_vtl_access,

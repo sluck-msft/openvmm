@@ -36,6 +36,10 @@ pub struct MemoryMappings {
     #[inspect(skip)]
     vtl0_gm: GuestMemory,
     #[inspect(skip)]
+    vtl0_kx_gm: GuestMemory,
+    #[inspect(skip)]
+    vtl0_ux_gm: GuestMemory,
+    #[inspect(skip)]
     vtl1_gm: Option<GuestMemory>,
     #[inspect(flatten)]
     cvm_memory: Option<CvmMemory>,
@@ -59,6 +63,14 @@ impl MemoryMappings {
     /// Includes all VTL0-accessible memory (private and shared).
     pub fn vtl0(&self) -> &GuestMemory {
         &self.vtl0_gm
+    }
+
+    pub fn vtl0_kernel_execute(&self) -> &GuestMemory {
+        &self.vtl0_kx_gm
+    }
+
+    pub fn vtl0_user_execute(&self) -> &GuestMemory {
+        &self.vtl0_ux_gm
     }
 
     pub fn vtl1(&self) -> Option<&GuestMemory> {
@@ -403,10 +415,31 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
         // TODO GUEST VSM: create guest memory objects using execute permissions
         // for the instruction emulator to use when reading instructions.
+
+        tracing::debug!("Creating VTL0 guest memory for kernel execute access");
+        let vtl0_kx_gm = GuestMemory::new_execute_multi_region(
+            "vtl0_kx",
+            vtom,
+            vec![Some(vtl0_mapping.clone()), Some(shared_mapping.clone())],
+            guestmem::ExecuteAccessType::KernelExecute,
+        )
+        .context("failed to make vtl0 guest memory with kernel execute access")?;
+
+        tracing::debug!("Creating VTL0 guest memory for user execute access");
+        let vtl0_ux_gm = GuestMemory::new_execute_multi_region(
+            "vtl0_ux",
+            vtom,
+            vec![Some(vtl0_mapping.clone()), Some(shared_mapping.clone())],
+            guestmem::ExecuteAccessType::UserExecute,
+        )
+        .context("failed to make vtl0 guest memory with user execute access")?;
+
         MemoryMappings {
             vtl0: vtl0_mapping,
             vtl1: vtl1_mapping,
             vtl0_gm,
+            vtl0_kx_gm,
+            vtl0_ux_gm,
             vtl1_gm,
             cvm_memory: Some(CvmMemory {
                 shared_gm,
@@ -478,10 +511,14 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             None
         };
 
+        // TODO: make kernel/user execute guest memory objects that use a
+        // fallback path to query the hypervisor for the permissions.
         MemoryMappings {
             vtl0: vtl0_mapping,
             vtl1: vtl1_mapping,
-            vtl0_gm,
+            vtl0_gm: vtl0_gm.clone(),
+            vtl0_kx_gm: vtl0_gm.clone(),
+            vtl0_ux_gm: vtl0_gm.clone(),
             vtl1_gm,
             cvm_memory: None,
         }

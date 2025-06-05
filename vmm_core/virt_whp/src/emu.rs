@@ -255,6 +255,10 @@ impl<T: CpuIo> virt_support_x86emu::emulate::EmulatorSupport for WhpEmulationSta
         }
     }
 
+    fn instruction_guest_memory(&self, is_user_mode: bool) -> &guestmem::GuestMemory {
+        &self.vp.vp.partition.gm
+    }
+
     fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
         self.vp
             .vp

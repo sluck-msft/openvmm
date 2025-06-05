@@ -3002,8 +3002,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         _gpa: u64,
         _mode: TranslateMode,
     ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError<Self::Error>> {
-        // Lock Vtl TLB
-        // TODO TDX GUEST VSM: VTL1 not yet supported
+        // Nothing to do here, the guest memory object will handle the check.
         Ok(())
     }
 
@@ -3036,6 +3035,19 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
             self.vtl,
             HvX64PendingExceptionEvent::from(event_info.reg_0.into_bits()),
         );
+    }
+
+    fn instruction_guest_memory(&self, is_user_mode: bool) -> &guestmem::GuestMemory {
+        match self.vtl {
+            GuestVtl::Vtl0 => {
+                if is_user_mode {
+                    &self.vp.partition.vtl0_user_exec_gm
+                } else {
+                    &self.vp.partition.vtl0_kernel_exec_gm
+                }
+            }
+            GuestVtl::Vtl1 => &self.vp.partition.gm[GuestVtl::Vtl1],
+        }
     }
 
     fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool {

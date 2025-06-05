@@ -7,6 +7,7 @@
 use crate::MshvVtlWithPolicy;
 use crate::RegistrationError;
 use crate::registrar::MemoryRegistrar;
+use guestmem::ExecuteAccessType;
 use guestmem::GuestMemoryAccess;
 use guestmem::GuestMemoryBackingError;
 use guestmem::PAGE_SIZE;
@@ -566,6 +567,29 @@ unsafe impl GuestMemoryAccess for GuestMemoryMapping {
         if let Some(bitmaps) = self.permission_bitmaps.as_ref() {
             Some(guestmem::BitmapInfo {
                 read_bitmap: NonNull::new(bitmaps.read_bitmap.as_ptr().cast()).unwrap(),
+                write_bitmap: NonNull::new(bitmaps.write_bitmap.as_ptr().cast()).unwrap(),
+                bit_offset: 0,
+            })
+        } else {
+            self.valid_memory
+                .as_ref()
+                .map(|bitmap| bitmap.access_bitmap())
+        }
+    }
+
+    fn execute_access_bitmap(
+        &self,
+        access_type: ExecuteAccessType,
+    ) -> Option<guestmem::BitmapInfo> {
+        if let Some(bitmaps) = self.permission_bitmaps.as_ref() {
+            Some(guestmem::BitmapInfo {
+                read_bitmap: NonNull::new(match access_type {
+                    ExecuteAccessType::KernelExecute => {
+                        bitmaps.kernel_execute_bitmap.as_ptr().cast()
+                    }
+                    ExecuteAccessType::UserExecute => bitmaps.kernel_execute_bitmap.as_ptr().cast(),
+                })
+                .unwrap(),
                 write_bitmap: NonNull::new(bitmaps.write_bitmap.as_ptr().cast()).unwrap(),
                 bit_offset: 0,
             })

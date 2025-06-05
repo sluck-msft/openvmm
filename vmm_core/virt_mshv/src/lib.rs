@@ -1007,6 +1007,10 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         self.processor.vcpufd.set_reg(reg).unwrap();
     }
 
+    fn instruction_guest_memory(&self, _is_user_mode: bool) -> &GuestMemory {
+        &self.partition.gm
+    }
+
     fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool {
         self.partition
             .memory
