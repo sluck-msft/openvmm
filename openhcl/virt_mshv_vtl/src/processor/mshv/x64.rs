@@ -1377,6 +1377,10 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     fn lapic_write(&mut self, _address: u64, _data: &[u8]) {
         unimplemented!()
     }
+
+    fn instruction_guest_memory(&self, _is_user_mode: bool) -> &guestmem::GuestMemory {
+        &self.vp.partition.gm[self.vtl]
+    }
 }
 
 impl<T: CpuIo> UhHypercallHandler<'_, '_, T, HypervisorBackedX86> {

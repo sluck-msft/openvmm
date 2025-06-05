@@ -517,7 +517,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                             None
                         }
                     })
-                    .collect::<Vec<_>>();
+                    .collect::<Vec<_>>()
             };
 
             guestmem::rcu().run(op)

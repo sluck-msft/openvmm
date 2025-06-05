@@ -19,6 +19,7 @@ use zerocopy::IntoBytes;
 /// failing vtl permissions checks and checking the resulting injected
 /// event
 struct MockSupport {
+    gm: GuestMemory,
     state: CpuState,
     instruction_bytes: Vec<u8>,
     fail_vtl_access: Option<Vtl>,
@@ -147,6 +148,10 @@ impl EmulatorSupport for MockSupport {
     fn lapic_write(&mut self, _address: u64, _data: &[u8]) {
         unreachable!()
     }
+
+    fn instruction_guest_memory(&self, is_user_mode: bool) -> &GuestMemory {
+        &self.gm
+    }
 }
 
 const TEST_ADDRESS: u64 = 0x100;
@@ -172,6 +177,7 @@ async fn run_emulation(
     };
 
     let mut support = MockSupport {
+        gm: gm.clone(),
         state: long_protected_mode(false),
         instruction_bytes: truncated_instructions,
         fail_vtl_access,

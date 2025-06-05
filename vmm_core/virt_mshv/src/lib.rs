@@ -1034,6 +1034,10 @@ impl EmulatorSupport for MshvEmulationState<'_> {
     fn lapic_write(&mut self, _address: u64, _data: &[u8]) {
         unreachable!()
     }
+
+    fn instruction_guest_memory(&self, _is_user_mode: bool) -> &GuestMemory {
+        &self.partition.gm
+    }
 }
 
 impl TranslateGvaSupport for MshvEmulationState<'_> {

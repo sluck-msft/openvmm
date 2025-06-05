@@ -397,6 +397,12 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
         None
     }
 
+    /// Similar to access_bitmap, for execute access
+    #[cfg(feature = "bitmap")]
+    fn execute_access_bitmap(&self, _access_type: ExecuteAccessType) -> Option<BitmapInfo> {
+        None
+    }
+
     // Returns an accessor for a subrange, or `None` to use the default
     // implementation.
     fn subrange(
@@ -1042,6 +1048,12 @@ enum AccessType {
     Write = 1,
 }
 
+#[derive(Copy, Clone)]
+pub enum ExecuteAccessType {
+    KernelExecute,
+    UserExecute,
+}
+
 /// `NonNull<u8>` that implements `Send+Sync`.
 ///
 /// Rust makes pointers `!Send+!Sync` by default to force you to think about the
@@ -1062,10 +1074,13 @@ unsafe impl Send for SendPtrU8 {}
 unsafe impl Sync for SendPtrU8 {}
 
 impl MemoryRegion {
-    fn new(imp: &impl GuestMemoryAccess) -> Self {
+    fn new(imp: &impl GuestMemoryAccess, for_execute: Option<ExecuteAccessType>) -> Self {
         #[cfg(feature = "bitmap")]
         let (bitmaps, bitmap_start) = {
-            let bitmap_info = imp.access_bitmap();
+            let bitmap_info = match for_execute {
+                Some(access_type) => imp.execute_access_bitmap(access_type),
+                None => imp.access_bitmap(),
+            };
             let bitmaps = bitmap_info
                 .as_ref()
                 .map(|bm| [SendPtrU8(bm.read_bitmap), SendPtrU8(bm.write_bitmap)]);
@@ -1191,11 +1206,35 @@ impl GuestMemory {
         if imp.mapping().is_some() && !cfg!(miri) {
             sparse_mmap::initialize_try_copy();
         }
-        Self::new_inner(debug_name.into(), imp, false)
+        Self::new_inner(debug_name.into(), imp, false, None)
     }
 
-    fn new_inner(debug_name: Arc<str>, imp: impl GuestMemoryAccess, allocated: bool) -> Self {
-        let regions = vec![MemoryRegion::new(&imp)];
+    /// Returns a new instance using `imp` as the backing, but for execute permissions.
+    ///
+    /// `debug_name` is used to specify which guest memory is being accessed in
+    /// error messages.
+    pub fn new_execute(
+        debug_name: impl Into<Arc<str>>,
+        imp: impl GuestMemoryAccess,
+        access_type: ExecuteAccessType,
+    ) -> Self {
+        // Install signal handlers on unix if a mapping is present.
+        //
+        // Skip this on miri even when there is a mapping, since the mapping may
+        // never be accessed by the code under test.
+        if imp.mapping().is_some() && !cfg!(miri) {
+            sparse_mmap::initialize_try_copy();
+        }
+        Self::new_inner(debug_name.into(), imp, false, Some(access_type))
+    }
+
+    fn new_inner(
+        debug_name: Arc<str>,
+        imp: impl GuestMemoryAccess,
+        allocated: bool,
+        for_execute: Option<ExecuteAccessType>,
+    ) -> Self {
+        let regions = vec![MemoryRegion::new(&imp, for_execute)];
         Self {
             inner: Arc::new(GuestMemoryInner {
                 imp,
@@ -1229,7 +1268,26 @@ impl GuestMemory {
     pub fn new_multi_region(
         debug_name: impl Into<Arc<str>>,
         region_size: u64,
+        imps: Vec<Option<impl GuestMemoryAccess>>,
+    ) -> Result<Self, MultiRegionError> {
+        Self::new_multi_region_inner(debug_name, region_size, imps, None)
+    }
+
+    /// Creates a new multi-region guest memory for execute access.
+    pub fn new_execute_multi_region(
+        debug_name: impl Into<Arc<str>>,
+        region_size: u64,
+        imps: Vec<Option<impl GuestMemoryAccess>>,
+        access_type: ExecuteAccessType,
+    ) -> Result<Self, MultiRegionError> {
+        Self::new_multi_region_inner(debug_name, region_size, imps, Some(access_type))
+    }
+
+    pub fn new_multi_region_inner(
+        debug_name: impl Into<Arc<str>>,
+        region_size: u64,
         mut imps: Vec<Option<impl GuestMemoryAccess>>,
+        for_execute: Option<ExecuteAccessType>,
     ) -> Result<Self, MultiRegionError> {
         // Install signal handlers on unix.
         sparse_mmap::initialize_try_copy();
@@ -1267,7 +1325,7 @@ impl GuestMemory {
                     region_size,
                 });
             }
-            *region = MemoryRegion::new(imp);
+            *region = MemoryRegion::new(imp, for_execute);
         }
 
         let region_def = RegionDefinition {
@@ -1302,7 +1360,7 @@ impl GuestMemory {
     /// different debug name, manually use `GuestMemory::new` with
     /// [`AlignedHeapMemory`].
     pub fn allocate(size: usize) -> Self {
-        Self::new_inner("heap".into(), AlignedHeapMemory::new(size), true)
+        Self::new_inner("heap".into(), AlignedHeapMemory::new(size), true, None)
     }
 
     /// If this memory is unaliased and was created via

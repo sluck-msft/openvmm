@@ -103,6 +103,9 @@ pub trait EmulatorSupport {
     /// Generates an event (exception, guest nested page fault, etc.) in the guest.
     fn inject_pending_event(&mut self, event_info: hvdef::HvX64PendingEvent);
 
+    /// Guest memory object for accessing instructions.
+    fn instruction_guest_memory(&self,  is_user_mode: bool) -> &GuestMemory;
+
     /// Check if the specified write is wholly inside the monitor page, and signal the associated
     /// connected ID if it is.
     fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
@@ -370,9 +373,10 @@ pub async fn emulate<T: EmulatorSupport>(
                 let len = (bytes.len() - valid_bytes)
                     .min((HV_PAGE_SIZE - (phys_ip & (HV_PAGE_SIZE - 1))) as usize);
 
-                if let Err(err) = cpu
-                    .gm
-                    .read_at(phys_ip, &mut bytes[valid_bytes..valid_bytes + len])
+                let instruction_gm = cpu.instruction_guest_memory(is_user_mode);
+
+                if let Err(err) =
+                    instruction_gm.read_at(phys_ip, &mut bytes[valid_bytes..valid_bytes + len])
                 {
                     tracing::error!(error = &err as &dyn std::error::Error, "read failed");
                     support.inject_pending_event(gpf_event());
@@ -771,6 +775,10 @@ impl<T: EmulatorSupport, U> EmulatorCpu<'_, T, U> {
                     denied_flags,
                 },
             })
+    }
+
+    pub fn instruction_guest_memory(&self, is_user_mode: bool) -> &GuestMemory {
+        self.support.instruction_guest_memory(is_user_mode)
     }
 }
 

@@ -3001,18 +3001,21 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
 
     fn check_vtl_access(
         &mut self,
-        gpa: u64,
-        mode: TranslateMode,
-        is_user_mode: bool,
+        _gpa: u64,
+        _mode: TranslateMode,
+        _is_user_mode: bool,
     ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError<Self::Error>> {
-        self.vp
-            .cvm_check_vtl_access(gpa, self.vtl, mode, is_user_mode)
-            .map_err(
-                |err| virt_support_x86emu::emulate::EmuCheckVtlAccessError::AccessDenied {
-                    vtl: err.vtl,
-                    denied_flags: err.protections,
-                },
-            )
+        // Nothing to do here, the guest memory object will handle the check.
+        Ok(())
+
+        // self.vp
+        //     .cvm_check_vtl_access(gpa, self.vtl, mode, is_user_mode)
+        //     .map_err(
+        //         |err| virt_support_x86emu::emulate::EmuCheckVtlAccessError::AccessDenied {
+        //             vtl: err.vtl,
+        //             denied_flags: err.protections,
+        //         },
+        //     )
     }
 
     fn translate_gva(
@@ -3073,6 +3076,19 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
                 vtl: self.vtl,
             })
             .mmio_write(address, data);
+    }
+
+    fn instruction_guest_memory(&self, is_user_mode: bool) -> &guestmem::GuestMemory {
+        match self.vtl {
+            GuestVtl::Vtl0 => {
+                if is_user_mode {
+                    &self.vp.partition.vtl0_user_exec_gm
+                } else {
+                    &self.vp.partition.vtl0_kernel_exec_gm
+                }
+            }
+            GuestVtl::Vtl1 => &self.vp.partition.gm[GuestVtl::Vtl1],
+        }
     }
 }
 

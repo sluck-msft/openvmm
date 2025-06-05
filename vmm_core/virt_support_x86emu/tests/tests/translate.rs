@@ -45,6 +45,7 @@ struct MockSupportTranslation {
 /// Execute access will generate an instruction stream that movs a given value.
 /// The instruction stream will be written to the expected gpa
 struct MockSupport {
+    gm: GuestMemory,
     state: CpuState,
     instruction_bytes: Vec<u8>,
     test_translation: MockSupportTranslation,
@@ -118,6 +119,7 @@ impl MockSupport {
         }
 
         MockSupport {
+            gm: gm.clone(),
             state,
             instruction_bytes: if let MockAccess::Execute(_) = access_info {
                 instruction_bytes[..0].into()
@@ -325,6 +327,10 @@ impl EmulatorSupport for MockSupport {
 
     fn lapic_write(&mut self, _address: u64, _data: &[u8]) {
         unreachable!()
+    }
+
+    fn instruction_guest_memory(&self, _is_user_mode: bool) -> &GuestMemory {
+        &self.gm
     }
 }
 
