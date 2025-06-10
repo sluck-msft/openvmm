@@ -404,9 +404,13 @@ pub async fn emulate<T: EmulatorSupport>(
                 if let Err(err) =
                     instruction_gm.read_at(phys_ip, &mut bytes[valid_bytes..valid_bytes + len])
                 {
-                    tracing::error!(error = &err as &dyn std::error::Error, "read failed");
-                    support.inject_pending_event(gpf_event());
-                    return Ok(());
+                    if cpu.handle_guest_memory_error(linear_ip, phys_ip, &err, is_user_mode) {
+                        return Ok(());
+                    } else {
+                        return Err(VpHaltReason::EmulationFailure(
+                            EmulationError::InstructionRead(err).into(),
+                        ));
+                    };
                 }
 
                 valid_bytes += len;
@@ -801,6 +805,47 @@ impl<T: EmulatorSupport, U> EmulatorCpu<'_, T, U> {
                 },
             })
     }
+
+    pub fn handle_guest_memory_error(
+        &mut self,
+        gva: u64,
+        gpa: u64,
+        err: &GuestMemoryError,
+        user_mode: bool,
+    ) -> bool {
+        match err.kind() {
+            guestmem::GuestMemoryErrorKind::VtlProtected => {
+                // TODO: support for this type for non-hardware-CVMs
+                // Note: Only VTL 1 can have its protections
+                // violated because VTL 2 pages don't show up as
+                // ram, so VTL 2 protection violations would result
+                // in an out of range error.
+                let vtl_err = Error::NoVtlAccess {
+                    gpa,
+                    intercepting_vtl: hvdef::Vtl::Vtl1,
+                    denied_flags: if user_mode {
+                        HvMapGpaFlags::new().with_user_executable(true)
+                    } else {
+                        HvMapGpaFlags::new().with_kernel_executable(true)
+                    },
+                };
+
+                if inject_memory_access_fault(gva, &vtl_err, self.support) {
+                    return true;
+                } else {
+                    return false;
+                };
+            }
+
+            _ => {
+                // TODO: usually inject machine check for vtl 2 protections
+                // violations, not gpf
+                tracing::error!(error = err as &dyn std::error::Error, "read failed");
+                self.support.inject_pending_event(gpf_event());
+                return true;
+            }
+        }
+    }
 }
 
 impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
@@ -820,8 +865,20 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         }
 
         if self.support.is_gpa_mapped(gpa, false) {
-            self.check_vtl_access(gpa, TranslateMode::Read)?;
-            self.gm.read_at(gpa, bytes).map_err(Error::Memory)?;
+            if let Err(err) = self.check_vtl_access(gpa, TranslateMode::Read) {
+                if inject_memory_access_fault(gva, &err, self.support) {
+                    return Ok(());
+                } else {
+                    return Err(err);
+                }
+            };
+            if let Err(err) = self.gm.read_at(gpa, bytes) {
+                if self.handle_guest_memory_error(gva, gpa, &err, is_user_mode) {
+                    return Ok(());
+                } else {
+                    return Err(Error::Memory(err));
+                }
+            };
         } else {
             self.dev
                 .read_mmio(self.support.vp_index(), gpa, bytes)
@@ -844,8 +901,20 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         }
 
         if self.support.is_gpa_mapped(gpa, true) {
-            self.check_vtl_access(gpa, TranslateMode::Write)?;
-            self.gm.write_at(gpa, bytes).map_err(Error::Memory)?;
+            if let Err(err) = self.check_vtl_access(gpa, TranslateMode::Write) {
+                if inject_memory_access_fault(gva, &err, self.support) {
+                    return Ok(());
+                } else {
+                    return Err(err);
+                }
+            };
+            if let Err(err) = self.gm.write_at(gpa, bytes) {
+                if self.handle_guest_memory_error(gva, gpa, &err, is_user_mode) {
+                    return Ok(());
+                } else {
+                    return Err(Error::Memory(err));
+                }
+            };
         } else {
             self.dev
                 .write_mmio(self.support.vp_index(), gpa, bytes)

@@ -164,6 +164,53 @@ unsafe impl GuestMemoryAccess for GuestMemoryView {
                 .map(|bitmap| bitmap.access_bitmap())
         }
     }
+
+    fn page_fault(
+        &self,
+        address: u64,
+        _len: usize,
+        _write: bool,
+        bitmap_failure: bool,
+    ) -> guestmem::PageFaultAction {
+        let err = {
+            if bitmap_failure {
+                if !self
+                    .memory_mapping
+                    .valid_memory
+                    .as_ref()
+                    .expect("all backings with bitmaps should have a GuestValidMemory")
+                    .check_valid(address / PAGE_SIZE as u64)
+                {
+                    if self.memory_mapping.iova_offset == Some(0) {
+                        guestmem::PageFaultError::new(
+                            guestmem::GuestMemoryErrorKind::NotPrivate,
+                            BitmapFailure::IncorrectHostVisibilityAccess,
+                        )
+                    } else {
+                        guestmem::PageFaultError::new(
+                            guestmem::GuestMemoryErrorKind::NotShared,
+                            BitmapFailure::IncorrectHostVisibilityAccess,
+                        )
+                    }
+                } else {
+                    // If there was a bitmap failure, and it wasn't the valid memory
+                    // bitmap, it must be the permissions bitmaps.
+                    debug_assert!(self.memory_mapping.permission_bitmaps.is_some());
+
+                    // Currently, only VTL 1 permissions are tracked.
+                    guestmem::PageFaultError::new(
+                        guestmem::GuestMemoryErrorKind::VtlProtected,
+                        BitmapFailure::VtlProtectionsViolation {
+                            vtl: hvdef::Vtl::Vtl1,
+                        },
+                    )
+                }
+            } else {
+                guestmem::PageFaultError::other(NotMapped {})
+            }
+        };
+        guestmem::PageFaultAction::Fail(err)
+    }
 }
 
 /// Partition-wide (cross-vtl) tracking of valid memory that can be used in
@@ -253,6 +300,18 @@ struct PermissionBitmaps {
 pub enum VtlPermissionsError {
     #[error("no vtl 1 permissions enforcement, bitmap is not present")]
     NoPermissionsTracked,
+}
+
+#[derive(Error, Debug)]
+#[error("the specified page is not mapped")]
+struct NotMapped {}
+
+#[derive(Error, Debug)]
+enum BitmapFailure {
+    #[error("the specified page was accessed using the wrong visibility mapping")]
+    IncorrectHostVisibilityAccess,
+    #[error("the specified page access violates VTL 1 protections")]
+    VtlProtectionsViolation { vtl: hvdef::Vtl },
 }
 
 #[derive(Debug)]

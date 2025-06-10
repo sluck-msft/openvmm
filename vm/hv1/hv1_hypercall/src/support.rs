@@ -308,6 +308,7 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
 
             // FUTURE: consider copying only the header and entries after
             // `rep_start` for rep hypercalls.
+            // TODO: send memory intercept here...
             self.guest_memory
                 .read_at(self.handler.input_gpa(), input)
                 .map_err(HypercallParseError::Access)?;
