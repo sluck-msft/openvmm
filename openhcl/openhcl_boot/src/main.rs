@@ -566,6 +566,9 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     let boot_reftime = get_ref_time(p.isolation_type);
 
+    // TODO: is this needed?
+    arch::initialize(&p);
+
     // The support code for the fast hypercalls does not set
     // the Guest ID if it is not set yet as opposed to the slow
     // hypercall code path where that is done automatically.
@@ -773,8 +776,10 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     rt::verify_stack_cookie();
 
-    log::info!("uninitializing hypercalls, about to jump to kernel");
+    log::info!("uninitializing hypercalls");
     hvcall().uninitialize();
+    log::info!("uninitializing arch, about to jump to the kernel");
+    arch::uninitialize(&p);
 
     cfg_if::cfg_if! {
         if #[cfg(target_arch = "x86_64")] {
