@@ -2480,37 +2480,42 @@ impl UhProcessor<'_, TdxBacked> {
                 // For now, we just check if the exit was suprious or if we
                 // should inject a machine check. An exit is considered spurious
                 // if the gpa is accessible.
-                if self.partition.gm[intercepted_vtl]
-                    .probe_gpa_readable(gpa)
-                    .is_ok()
-                {
-                    tracelimit::warn_ratelimited!(
+                match self.partition.gm[intercepted_vtl].probe_gpa_readable(gpa) {
+                    Ok(_) => tracelimit::warn_ratelimited!(
                         CVM_ALLOWED,
                         gpa,
                         "possible spurious EPT violation, ignoring"
-                    );
-                } else {
-                    // TODO: It would be better to show what exact bitmap check
-                    // failed, but that requires some refactoring of how the
-                    // different bitmaps are stored. Do this when we support VTL
-                    // protections or MNF.
-                    //
-                    // If we entered this path, it means the bitmap check on
-                    // `check_gpa_readable` failed, so we can assume that if the
-                    // address is shared, the actual state of the page is
-                    // private, and vice versa. This is because the address
-                    // should have already been checked to be valid memory
-                    // described to the guest or not.
-                    tracelimit::warn_ratelimited!(
-                        CVM_ALLOWED,
-                        gpa,
-                        is_shared,
-                        ?ept_info,
-                        "guest accessed inaccessible gpa, injecting MC"
-                    );
+                    ),
+                    Err(err) => {
+                        let error_handler =
+                            virt_support_x86emu::emulate::GuestMemoryErrorCpuHandler {};
 
-                    // TODO: Implement IA32_MCG_STATUS MSR for more reporting
-                    self.inject_mc(intercepted_vtl);
+                        // TODO: It would be better to show what exact bitmap check
+                        // failed, but that requires some refactoring of how the
+                        // different bitmaps are stored. Do this when we support VTL
+                        // protections or MNF.
+                        //
+                        // If we entered this path, it means the bitmap check on
+                        // `check_gpa_readable` failed, so we can assume that if the
+                        // address is shared, the actual state of the page is
+                        // private, and vice versa. This is because the address
+                        // should have already been checked to be valid memory
+                        // described to the guest or not.
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            gpa,
+                            is_shared,
+                            ?ept_info,
+                            "guest accessed inaccessible gpa, injecting MC"
+                        );
+
+                        // TODO: Implement IA32_MCG_STATUS MSR for more reporting
+                        error_handler.handle_guest_memory_error(
+                            None, gpa, &err,
+                            false, // TODO: doesn't really matter for a read, probably some cleanup here
+                            self,
+                        );
+                    }
                 }
             }
             None => {
@@ -3048,8 +3053,11 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         assert!(event_info.reg_0.event_pending());
         assert!(!self.interruption_pending);
 
-        self.vp
-            .cvm_inject_emulation_pending_event(self.vtl, event_info);
+        self.vp.cvm_inject_pending_event(self.vtl, event_info);
+    }
+
+    fn inject_memory_intercept(&mut self, vtl: Vtl, event: hvdef::HvX64PendingEvent) {
+        self.vp.cvm_inject_memory_intercept(vtl, self.vtl, event);
     }
 
     fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool {
@@ -3546,6 +3554,16 @@ impl UhProcessor<'_, TdxBacked> {
         };
 
         (gva, segment)
+    }
+}
+
+impl virt_support_x86emu::emulate::GuestMemoryErrorCpuSupport for UhProcessor<'_, TdxBacked> {
+    // TODO: fix vtls
+    fn inject_pending_event(&mut self, event: hvdef::HvX64PendingEvent) {
+        self.cvm_inject_pending_event(self.backing.cvm.exit_vtl, event);
+    }
+    fn inject_memory_intercept(&mut self, vtl: Vtl, event: hvdef::HvX64PendingEvent) {
+        self.cvm_inject_memory_intercept(vtl, self.backing.cvm.exit_vtl, event);
     }
 }
 

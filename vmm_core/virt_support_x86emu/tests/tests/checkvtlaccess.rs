@@ -131,6 +131,10 @@ impl EmulatorSupport for MockSupport {
         self.injected_event = Some(event_info);
     }
 
+    fn inject_memory_intercept(&mut self, _vtl: hvdef::Vtl, event: hvdef::HvX64PendingEvent) {
+        self.inject_pending_event(event);
+    }
+
     fn is_gpa_mapped(&self, _gpa: u64, _write: bool) -> bool {
         true
     }

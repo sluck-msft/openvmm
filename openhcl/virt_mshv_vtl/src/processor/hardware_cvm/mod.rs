@@ -2281,63 +2281,50 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         Ok(())
     }
 
-    pub(crate) fn cvm_inject_emulation_pending_event(
+    pub(crate) fn cvm_inject_pending_event(
         &mut self,
-        emulating_vtl: GuestVtl,
+        vtl: GuestVtl,
         event_info: hvdef::HvX64PendingEvent,
     ) {
-        if event_info.reg_0.event_type() == hvdef::HV_X64_PENDING_EVENT_MEMORY_INTERCEPT {
-            let memory_event =
-                hvdef::HvX64PendingEventMemoryIntercept::read_from_bytes(event_info.as_bytes())
-                    .expect("memory event and pending event are the same size");
-            match Vtl::try_from(memory_event.target_vtl).unwrap() {
-                Vtl::Vtl0 => panic!("VTL 0 cannot put protections on itself"),
-                Vtl::Vtl1 => {
-                    tracing::debug!(
-                        "vtl 1 protections violated, sending vtl 1 a memory intercept message"
-                    );
-                    assert!(emulating_vtl == GuestVtl::Vtl0);
-                    let message_state =
-                        B::intercept_message_state(self, emulating_vtl, false, false);
-                    self.send_intercept_message(
-                        GuestVtl::Vtl1,
-                        &crate::processor::InterceptMessageType::Memory {
-                            gva: memory_event.guest_linear_address,
-                            gpa: memory_event.guest_physical_address,
-                            gva_valid: memory_event.access_flags.guest_linear_address_valid(),
-                        }
-                        .generate_hv_message(
-                            self.vp_index(),
-                            emulating_vtl,
-                            message_state,
-                            memory_event.access_type,
-                        ),
-                    );
-                }
-                Vtl::Vtl2 => {
-                    // The intercept is directed at openhcl itself, which is unrecoverable.
-                    tracing::debug!(
-                        "vtl 2 protections violated, sending a machine check to the guest."
-                    );
-                    let exception = HvX64PendingExceptionEvent::new()
-                        .with_event_pending(true)
-                        .with_event_type(hvdef::HV_X64_PENDING_EVENT_EXCEPTION)
-                        .with_vector(x86defs::Exception::MACHINE_CHECK.0 as u16);
+        assert_eq!(
+            event_info.reg_0.event_type(),
+            hvdef::HV_X64_PENDING_EVENT_EXCEPTION
+        );
+        let exception = HvX64PendingExceptionEvent::from(event_info.reg_0.into_bits());
 
-                    B::set_pending_exception(self, emulating_vtl, exception); // TODO: check vtl
-                }
+        // There's no interruption pending, so just inject the exception
+        // directly without checking for double fault.
+        B::set_pending_exception(self, vtl, exception); // TODO: check vtl
+    }
+
+    pub(crate) fn cvm_inject_memory_intercept(
+        &mut self,
+        vtl: Vtl,
+        offending_vtl: GuestVtl, // TODO: rename
+        event: hvdef::HvX64PendingEvent,
+    ) {
+        assert!(event.reg_0.event_type() == hvdef::HV_X64_PENDING_EVENT_MEMORY_INTERCEPT);
+        let memory_event =
+            hvdef::HvX64PendingEventMemoryIntercept::read_from_bytes(event.as_bytes())
+                .expect("memory event and pending event are the same size");
+        assert_eq!(Vtl::try_from(memory_event.target_vtl).unwrap(), Vtl::Vtl1);
+
+        assert!(offending_vtl == GuestVtl::Vtl0);
+        let message_state = B::intercept_message_state(self, offending_vtl, false, false);
+        self.send_intercept_message(
+            vtl.try_into().unwrap(),
+            &crate::processor::InterceptMessageType::Memory {
+                gva: memory_event.guest_linear_address,
+                gpa: memory_event.guest_physical_address,
+                gva_valid: memory_event.access_flags.guest_linear_address_valid(),
             }
-        } else {
-            assert_eq!(
-                event_info.reg_0.event_type(),
-                hvdef::HV_X64_PENDING_EVENT_EXCEPTION
-            );
-            let exception = HvX64PendingExceptionEvent::from(event_info.reg_0.into_bits());
-
-            // There's no interruption pending, so just inject the exception
-            // directly without checking for double fault.
-            B::set_pending_exception(self, emulating_vtl, exception); // TODO: check vtl
-        }
+            .generate_hv_message(
+                self.vp_index(),
+                offending_vtl,
+                message_state,
+                memory_event.access_type,
+            ),
+        );
     }
 
     fn get_vsm_vp_secure_config_vtl(

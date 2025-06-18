@@ -1013,6 +1013,10 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         self.processor.vcpufd.set_reg(reg).unwrap();
     }
 
+    fn inject_memory_intercept(&mut self, _vtl: hvdef::Vtl, event: hvdef::HvX64PendingEvent) {
+        self.inject_pending_event(event);
+    }
+
     fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool {
         self.partition
             .memory

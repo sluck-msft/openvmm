@@ -114,6 +114,10 @@ impl EmulatorSupport for MockSupport {
         todo!()
     }
 
+    fn inject_memory_intercept(&mut self, _vtl: hvdef::Vtl, _event: hvdef::HvX64PendingEvent) {
+        todo!()
+    }
+
     fn is_gpa_mapped(&self, _gpa: u64, _write: bool) -> bool {
         true
     }

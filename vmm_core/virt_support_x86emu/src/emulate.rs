@@ -102,6 +102,9 @@ pub trait EmulatorSupport {
     /// Generates an event (exception, guest nested page fault, etc.) in the guest.
     fn inject_pending_event(&mut self, event_info: hvdef::HvX64PendingEvent);
 
+    // Sends a memory intercept to the given VTL
+    fn inject_memory_intercept(&mut self, vtl: hvdef::Vtl, event: hvdef::HvX64PendingEvent);
+
     /// Check if the specified write is wholly inside the monitor page, and signal the associated
     /// connected ID if it is.
     fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
@@ -383,6 +386,10 @@ pub async fn emulate<T: EmulatorSupport>(
 
                 // TODO: fold this access check into the GuestMemory object for
                 // each of the backings, if possible.
+                //
+                // TODO: there are to many ways to inject faults, especially
+                // once the guestmemoryerrorhandler moves to its final location.
+                // See if they can be unified.
                 if let Err(err) = cpu.check_vtl_access(phys_ip, TranslateMode::Execute) {
                     if inject_memory_access_fault(linear_ip, &err, support) {
                         return Ok(());
@@ -404,13 +411,16 @@ pub async fn emulate<T: EmulatorSupport>(
                 if let Err(err) =
                     instruction_gm.read_at(phys_ip, &mut bytes[valid_bytes..valid_bytes + len])
                 {
-                    if cpu.handle_guest_memory_error(linear_ip, phys_ip, &err, is_user_mode) {
-                        return Ok(());
-                    } else {
-                        return Err(VpHaltReason::EmulationFailure(
-                            EmulationError::InstructionRead(err).into(),
-                        ));
-                    };
+                    let error_handler = GuestMemoryErrorCpuHandler {};
+                    error_handler.handle_guest_memory_error(
+                        Some(linear_ip),
+                        phys_ip,
+                        &err.kind(),
+                        is_user_mode,
+                        &mut cpu,
+                    );
+
+                    return Ok(());
                 }
 
                 valid_bytes += len;
@@ -1019,6 +1029,15 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
     }
 }
 
+impl<T: EmulatorSupport, U: CpuIo> GuestMemoryErrorCpuSupport for EmulatorCpu<'_, T, U> {
+    fn inject_pending_event(&mut self, event: hvdef::HvX64PendingEvent) {
+        self.support.inject_pending_event(event)
+    }
+    fn inject_memory_intercept(&mut self, vtl: hvdef::Vtl, event: hvdef::HvX64PendingEvent) {
+        self.support.inject_memory_intercept(vtl, event)
+    }
+}
+
 /// Emulates an IO port instruction.
 ///
 /// Just handles calling into the IO bus and updating `rax`. The caller must
@@ -1085,7 +1104,7 @@ fn inject_memory_access_fault<T: EmulatorSupport>(
                 "Vtl permissions checking failed"
             );
 
-            let event = vtl_access_event(gva, *gpa, *intercepting_vtl, *denied_flags);
+            let event = vtl_access_event(Some(gva), *gpa, *intercepting_vtl, *denied_flags);
             support.inject_pending_event(event);
             true
         }
@@ -1115,10 +1134,14 @@ fn gpf_event() -> hvdef::HvX64PendingEvent {
     make_exception_event(Exception::GENERAL_PROTECTION_FAULT, Some(0), None)
 }
 
+fn machine_check_event() -> hvdef::HvX64PendingEvent {
+    make_exception_event(Exception::MACHINE_CHECK, None, None)
+}
+
 /// Generates the appropriate event for a VTL access error based
 /// on the intercepting VTL
 fn vtl_access_event(
-    gva: u64,
+    gva: Option<u64>,
     gpa: u64,
     intercepting_vtl: hvdef::Vtl,
     denied_access: HvMapGpaFlags,
@@ -1128,7 +1151,7 @@ fn vtl_access_event(
             .with_event_pending(true)
             .with_event_type(hvdef::HV_X64_PENDING_EVENT_MEMORY_INTERCEPT);
         let access_flags = hvdef::HvX64PendingEventMemoryInterceptAccessFlags::new()
-            .with_guest_linear_address_valid(true)
+            .with_guest_linear_address_valid(gva.is_some())
             .with_caused_by_gpa_access(true);
 
         let access_type = if denied_access.kernel_executable() || denied_access.user_executable() {
@@ -1145,7 +1168,8 @@ fn vtl_access_event(
             access_type,
             access_flags,
             _reserved2: 0,
-            guest_linear_address: (gva >> hvdef::HV_PAGE_SHIFT) << hvdef::HV_PAGE_SHIFT,
+            guest_linear_address: (gva.unwrap_or_default() >> hvdef::HV_PAGE_SHIFT)
+                << hvdef::HV_PAGE_SHIFT,
             guest_physical_address: (gpa >> hvdef::HV_PAGE_SHIFT) << hvdef::HV_PAGE_SHIFT,
             _reserved3: 0,
         };
@@ -1153,7 +1177,50 @@ fn vtl_access_event(
         hvdef::HvX64PendingEvent::read_from_bytes(memory_event.as_bytes())
             .expect("memory event and pending event should be the same size")
     } else {
-        gpf_event()
+        machine_check_event()
+    }
+}
+
+// TODO: all this guest memory error handling probably should go somewhere
+// more generic that can apply to multiple architectures, not just here
+pub trait GuestMemoryErrorCpuSupport {
+    fn inject_pending_event(&mut self, event: hvdef::HvX64PendingEvent);
+    fn inject_memory_intercept(&mut self, vtl: hvdef::Vtl, event: hvdef::HvX64PendingEvent);
+}
+
+pub struct GuestMemoryErrorCpuHandler {}
+
+impl GuestMemoryErrorCpuHandler {
+    pub fn handle_guest_memory_error<S: GuestMemoryErrorCpuSupport>(
+        &self,
+        gva: Option<u64>,
+        gpa: u64,
+        err: &guestmem::GuestMemoryErrorKind,
+        user_mode: bool,
+        support: &mut S,
+    ) {
+        // TODO: handle dynamic memory, overlays, VMM bugs, out of resources
+        match err {
+            guestmem::GuestMemoryErrorKind::VtlProtected => {
+                let denied_flags = if user_mode {
+                    HvMapGpaFlags::new().with_user_executable(true)
+                } else {
+                    HvMapGpaFlags::new().with_kernel_executable(true)
+                };
+
+                let event = vtl_access_event(gva, gpa, hvdef::Vtl::Vtl1, denied_flags);
+                // Note: Only VTL 1 can have its protections violated because
+                // VTL 2 pages don't show up as ram, so VTL 2 protection
+                // violations would result in an out of range error. TODO:
+                // consider being able to specify which VTL had its protections
+                // violated to remove assumptions.
+                support.inject_memory_intercept(hvdef::Vtl::Vtl1, event);
+            }
+            _ => {
+                tracing::error!(?err, "read failed");
+                support.inject_pending_event(machine_check_event());
+            }
+        }
     }
 }
 

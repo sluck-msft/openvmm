@@ -1352,6 +1352,19 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
             .expect("set_vp_registers hypercall for setting pending event should not fail");
     }
 
+    fn inject_memory_intercept(&mut self, vtl: Vtl, event: HvX64PendingEvent) {
+        let regs = [
+            (HvX64RegisterName::PendingEvent0, u128::from(event.reg_0)),
+            (HvX64RegisterName::PendingEvent1, u128::from(event.reg_1)),
+        ];
+
+        // TODO: is this the right VTL? Was the original code always wrong?
+        self.vp
+            .runner
+            .set_vp_registers_hvcall(vtl, regs)
+            .expect("set_vp_registers hypercall for setting pending event should not fail");
+    }
+
     fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
         self.vp
             .partition

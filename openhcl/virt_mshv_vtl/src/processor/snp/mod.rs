@@ -1826,8 +1826,12 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
         assert!(event_info.reg_0.event_pending());
         assert!(!self.interruption_pending);
 
+        self.vp.cvm_inject_pending_event(self.vtl, event_info);
+    }
+
+    fn inject_memory_intercept(&mut self, vtl: Vtl, event: hvdef::HvX64PendingEvent) {
         self.vp
-            .cvm_inject_emulation_pending_event(self.vtl, event_info);
+            .cvm_inject_memory_intercept(vtl, self.vtl.try_into().unwrap(), event);
     }
 
     fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool {

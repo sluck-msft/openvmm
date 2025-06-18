@@ -141,7 +141,7 @@ pub enum GuestMemoryErrorKind {
     VtlProtected,
     /// The memory is shared but was accessed via a private address.
     NotPrivate,
-    /// The memory is private but was accessed via a shared address. 
+    /// The memory is private but was accessed via a shared address.
     NotShared,
 }
 
