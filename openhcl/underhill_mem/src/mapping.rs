@@ -91,14 +91,14 @@ impl GuestMemoryView {
 
 #[derive(Error, Debug)]
 #[error("the specified page is not mapped")]
-struct NotMapped {}
+struct NotMapped;
 
 #[derive(Error, Debug)]
 enum BitmapFailure {
     #[error("the specified page was accessed using the wrong visibility mapping")]
     IncorrectHostVisibilityAccess,
     #[error("the specified page access violates VTL 1 protections")]
-    VtlProtectionsViolation { vtl: hvdef::Vtl },
+    Vtl1ProtectionsViolation,
 }
 
 /// SAFETY: Implementing the `GuestMemoryAccess` contract, including the
@@ -186,7 +186,9 @@ unsafe impl GuestMemoryAccess for GuestMemoryView {
         bitmap_failure: bool,
     ) -> guestmem::PageFaultAction {
         let gpn = address / PAGE_SIZE as u64;
-        if bitmap_failure {
+        if !bitmap_failure {
+            guestmem::PageFaultAction::Fail(guestmem::PageFaultError::other(NotMapped {}))
+        } else {
             let valid_memory = self
                 .memory_mapping
                 .valid_memory
@@ -242,17 +244,16 @@ unsafe impl GuestMemoryAccess for GuestMemoryView {
 
                         return guestmem::PageFaultAction::Fail(guestmem::PageFaultError::new(
                             guestmem::GuestMemoryErrorKind::VtlProtected,
-                            BitmapFailure::VtlProtectionsViolation {
-                                vtl: hvdef::Vtl::Vtl1,
-                            },
+                            BitmapFailure::Vtl1ProtectionsViolation,
                         ));
                     }
                 }
 
+                // Possible race condition where the bitmaps are in transition
+                // and while the original check failed, the bitmaps now show
+                // valid access to the page. Retry in that situation.
                 guestmem::PageFaultAction::Retry
             }
-        } else {
-            guestmem::PageFaultAction::Fail(guestmem::PageFaultError::other(NotMapped {}))
         }
     }
 }
