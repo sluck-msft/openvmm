@@ -15,6 +15,7 @@ use crate::partition::HvlitePartition;
 use crate::worker::dispatch::InitializedVm;
 use crate::worker::dispatch::Manifest;
 use futures::future::BoxFuture;
+use guestmem::GuestMemory;
 use hypervisor_resources::HypervisorKind;
 use membacking::SharedMemoryBacking;
 use vm_resource::CanResolveTo;
@@ -79,6 +80,34 @@ impl ResolvedHypervisorBackend {
                     platform_info,
                     cfg,
                     shared_memory,
+                    None,
+                )
+                .await
+            })
+        }))
+    }
+
+    /// Wraps a [`virt::Hypervisor`] into a resolved backend, using the
+    /// provided [`GuestMemory`] instead of building one via `membacking`.
+    ///
+    /// Use this for backends that manage guest memory in-kernel (e.g. VID)
+    /// and need to supply their own memory access implementation.
+    pub fn new_with_guest_memory<H>(hypervisor: H, guest_memory: GuestMemory) -> Self
+    where
+        H: HypervisorBackend,
+        for<'a> H::ProtoPartition<'a>: Send,
+    {
+        Self(Box::new(move |driver_source, cfg, shared_memory| {
+            Box::pin(async move {
+                let mut hv = hypervisor;
+                let platform_gsiv = virt::Hypervisor::platform_gsiv(&hv);
+                InitializedVm::new_with_hypervisor(
+                    driver_source,
+                    &mut hv,
+                    platform_gsiv,
+                    cfg,
+                    shared_memory,
+                    Some(guest_memory),
                 )
                 .await
             })

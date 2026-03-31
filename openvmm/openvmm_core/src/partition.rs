@@ -377,7 +377,9 @@ impl<T: Processor> SaveRestore for WrappedVp<'_, T> {
     }
 }
 
+/// Trait for binding a virtual processor to its execution context.
 pub trait BindHvliteVp: Send {
+    /// Binds the VP, returning an object that can run the VP.
     fn bind<'a>(&'a mut self) -> anyhow::Result<Box<dyn 'a + HvliteVp>>;
 }
 

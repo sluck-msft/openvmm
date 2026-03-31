@@ -392,7 +392,7 @@ pub(crate) struct InitializedVm {
     vps: Vec<Box<dyn BindHvliteVp>>,
     vmtime_keeper: VmTimeKeeper,
     vmtime_source: VmTimeSource,
-    memory_manager: GuestMemoryManager,
+    memory_manager: Option<GuestMemoryManager>,
     gm: GuestMemory,
     cfg: Manifest,
     mem_layout: MemoryLayout,
@@ -626,7 +626,7 @@ struct LoadedVmInner {
     chipset_devices: ChipsetDevices,
     _vmtime: SpawnedUnit<VmTimeKeeper>,
     _scsi_devices: Vec<SpawnedUnit<ChannelUnit<storvsp::StorageDevice>>>,
-    memory_manager: GuestMemoryManager,
+    memory_manager: Option<GuestMemoryManager>,
     gm: GuestMemory,
     vtl0_hvsock_relay: Option<HvsockRelay>,
     vtl2_hvsock_relay: Option<HvsockRelay>,
@@ -773,6 +773,7 @@ impl InitializedVm {
         platform_info: virt::PlatformInfo,
         cfg: Manifest,
         shared_memory: Option<SharedMemoryBacking>,
+        external_guest_memory: Option<GuestMemory>,
     ) -> anyhow::Result<Self>
     where
         H: virt::Hypervisor<Partition = P>,
@@ -925,50 +926,64 @@ impl InitializedVm {
             anyhow::bail!("hugepage_size={size} requires hugepages=on");
         }
 
-        let mut memory_builder = GuestMemoryBuilder::new();
-        memory_builder = memory_builder
-            .existing_backing(shared_memory)
-            .vtl0_alias_map(vtl0_alias_map)
-            .prefetch_ram(cfg.memory.prefetch_memory)
-            .private_memory(cfg.memory.private_memory)
-            .transparent_hugepages(cfg.memory.transparent_hugepages)
-            .x86_legacy_support(
-                matches!(cfg.load_mode, LoadMode::Pcat { .. }) || cfg.chipset.with_hyperv_vga,
-            );
-        if cfg.memory.hugepages {
-            memory_builder = memory_builder.hugepages(cfg.memory.hugepage_size);
-        }
-
-        #[cfg(all(windows, feature = "virt_whp"))]
-        if !cfg.vpci_resources.is_empty() {
-            memory_builder = memory_builder.pin_mappings(true);
-        }
-
-        cfg_if! {
-            if #[cfg(windows)] {
-                let vtl2_memory_process = if cfg.hypervisor.with_vtl2.is_some() {
-                    // VTL2 needs a separate memory hosting process.
-                    let process = pal::windows::process::empty_process()
-                        .context("could not launch a memory process for VTL2")?;
-                    Some(Box::new(process) as _)
-                } else {
-                    None
-                };
-            } else {
-                let vtl2_memory_process = None;
+        let (memory_manager, gm) = if let Some(gm) = external_guest_memory {
+            // The backend provided its own GuestMemory - skip membacking.
+            (None, gm)
+        } else {
+            let mut memory_builder = GuestMemoryBuilder::new();
+            memory_builder = memory_builder
+                .existing_backing(shared_memory)
+                .vtl0_alias_map(vtl0_alias_map)
+                .prefetch_ram(cfg.memory.prefetch_memory)
+                .private_memory(cfg.memory.private_memory)
+                .transparent_hugepages(cfg.memory.transparent_hugepages)
+                .x86_legacy_support(
+                    matches!(cfg.load_mode, LoadMode::Pcat { .. }) || cfg.chipset.with_hyperv_vga,
+                );
+            if cfg.memory.hugepages {
+                memory_builder = memory_builder.hugepages(cfg.memory.hugepage_size);
             }
-        }
 
-        let mut memory_manager = memory_builder
-            .build(&mem_layout)
-            .await
-            .context("failed to build guest memory")?;
+            #[cfg(all(windows, feature = "virt_whp"))]
+            if !cfg.vpci_resources.is_empty() {
+                memory_builder = memory_builder.pin_mappings(true);
+            }
 
-        let gm = memory_manager
-            .client()
-            .guest_memory()
-            .await
-            .context("failed to get guest memory")?;
+            cfg_if! {
+                if #[cfg(windows)] {
+                    let vtl2_memory_process = if cfg.hypervisor.with_vtl2.is_some() {
+                        // VTL2 needs a separate memory hosting process.
+                        let process = pal::windows::process::empty_process()
+                            .context("could not launch a memory process for VTL2")?;
+                        Some(Box::new(process) as _)
+                    } else {
+                        None
+                    };
+                } else {
+                    let vtl2_memory_process = None;
+                }
+            }
+
+            let memory_manager = memory_builder
+                .build(&mem_layout)
+                .await
+                .context("failed to build guest memory")?;
+
+            let gm = memory_manager
+                .client()
+                .guest_memory()
+                .await
+                .context("failed to get guest memory")?;
+
+            (Some((memory_manager, vtl2_memory_process)), gm)
+        };
+
+        // Unpack the memory manager tuple if present.
+        let (mut memory_manager, vtl2_memory_process) = match memory_manager {
+            Some((mm, vmp)) => (Some(mm), vmp),
+            None => (None, None),
+        };
+
         let mut cpuid = Vec::new();
 
         // Add in Hyper-V VMM CPUID leaves.
@@ -995,20 +1010,20 @@ impl InitializedVm {
 
         let partition = Arc::new(partition);
 
-        memory_manager
-            .attach_partition(Vtl::Vtl0, &partition.memory_mapper(Vtl::Vtl0), None)
-            .await
-            .context("failed to attach memory to the partition")?;
+        if let Some(mm) = &mut memory_manager {
+            mm.attach_partition(Vtl::Vtl0, &partition.memory_mapper(Vtl::Vtl0), None)
+                .await
+                .context("failed to attach memory to the partition")?;
 
-        if cfg.hypervisor.with_vtl2.is_some() {
-            memory_manager
-                .attach_partition(
+            if cfg.hypervisor.with_vtl2.is_some() {
+                mm.attach_partition(
                     Vtl::Vtl2,
                     &partition.memory_mapper(Vtl::Vtl2),
                     vtl2_memory_process,
                 )
                 .await
                 .context("failed to attach memory to VTL2")?;
+            }
         }
 
         Ok(Self {
@@ -1139,7 +1154,9 @@ impl InitializedVm {
             cfg.firmware_event_send.clone(),
         ));
 
-        let mapper = memory_manager.device_memory_mapper();
+        let mapper = memory_manager.as_ref().map(|mm| mm.device_memory_mapper());
+        let mapper_dyn: Option<&dyn guestmem::MemoryMapper> =
+            mapper.as_ref().map(|m| m as &dyn guestmem::MemoryMapper);
 
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let mut deps_hyperv_firmware_pcat = None;
@@ -1224,7 +1241,15 @@ impl InitializedVm {
                 boot_order,
             } => {
                 tracing::debug!(?firmware, "Loading BIOS firmware.");
-                let rom_builder = RomBuilder::new("bios".into(), Box::new(mapper.clone()));
+                let rom_builder = RomBuilder::new(
+                    "bios".into(),
+                    Box::new(
+                        mapper
+                            .as_ref()
+                            .context("PCAT firmware requires a device memory mapper")?
+                            .clone(),
+                    ),
+                );
                 let rom = rom_builder.build_from_file_location(firmware)?;
                 // TODO: move mtrr replay to a resource.
                 let halt_vps = halt_vps.clone();
@@ -1561,12 +1586,20 @@ impl InitializedVm {
 
         let deps_generic_psp = (cfg.chipset.with_generic_psp).then_some(dev::GenericPspDeps {});
 
-        let deps_hyperv_framebuffer =
-            (cfg.chipset.with_hyperv_framebuffer).then(|| dev::HyperVFramebufferDeps {
-                fb_mapper: Box::new(mapper.clone()),
-                fb: cfg.framebuffer.unwrap(),
-                vtl2_framebuffer_gpa_base,
-            });
+        let deps_hyperv_framebuffer = (cfg.chipset.with_hyperv_framebuffer)
+            .then(|| -> anyhow::Result<_> {
+                Ok(dev::HyperVFramebufferDeps {
+                    fb_mapper: Box::new(
+                        mapper
+                            .as_ref()
+                            .context("framebuffer requires a device memory mapper")?
+                            .clone(),
+                    ),
+                    fb: cfg.framebuffer.unwrap(),
+                    vtl2_framebuffer_gpa_base,
+                })
+            })
+            .transpose()?;
 
         let deps_hyperv_power_management =
             (cfg.chipset.with_hyperv_power_management).then_some(dev::HyperVPowerManagementDeps {
@@ -1577,7 +1610,15 @@ impl InitializedVm {
 
         let deps_hyperv_vga = if cfg.chipset.with_hyperv_vga {
             let vga_firmware = cfg.vga_firmware.as_ref().context("no VGA BIOS file")?;
-            let rom_builder = RomBuilder::new("vga".into(), Box::new(mapper.clone()));
+            let rom_builder = RomBuilder::new(
+                "vga".into(),
+                Box::new(
+                    mapper
+                        .as_ref()
+                        .context("VGA ROM requires a device memory mapper")?
+                        .clone(),
+                ),
+            );
             let rom = rom_builder.build_from_file_location(vga_firmware)?;
 
             Some(dev::HyperVVgaDeps {
@@ -1588,15 +1629,21 @@ impl InitializedVm {
             None
         };
 
-        let deps_i440bx_host_pci_bridge =
-            (cfg.chipset.with_i440bx_host_pci_bridge).then(|| dev::I440BxHostPciBridgeDeps {
-                attached_to: pci_bus_id_piix4.clone(),
-                adjust_gpa_range: Box::new(
-                    emuplat::i440bx_host_pci_bridge::ManageRamGpaRange::new(
-                        memory_manager.ram_visibility_control(),
+        let deps_i440bx_host_pci_bridge = (cfg.chipset.with_i440bx_host_pci_bridge)
+            .then(|| -> anyhow::Result<_> {
+                let mm = memory_manager
+                    .as_ref()
+                    .context("i440BX bridge requires a memory manager")?;
+                Ok(dev::I440BxHostPciBridgeDeps {
+                    attached_to: pci_bus_id_piix4.clone(),
+                    adjust_gpa_range: Box::new(
+                        emuplat::i440bx_host_pci_bridge::ManageRamGpaRange::new(
+                            mm.ram_visibility_control(),
+                        ),
                     ),
-                ),
-            });
+                })
+            })
+            .transpose()?;
 
         let deps_piix4_pci_bus = (cfg.chipset.with_piix4_pci_bus).then(|| dev::Piix4PciBusDeps {
             bus_id: pci_bus_id_piix4.clone(),
@@ -1863,7 +1910,7 @@ impl InitializedVm {
                     gm,
                     dev_cfg.resource,
                     partition.clone().into_doorbell_registration(Vtl::Vtl0),
-                    Some(mapper),
+                    mapper_dyn,
                     partition.as_signal_msi(Vtl::Vtl0),
                     partition.irqfd(),
                 )
@@ -2063,7 +2110,7 @@ impl InitializedVm {
                         dev_cfg.resource,
                         &chipset_builder,
                         partition.clone().into_doorbell_registration(vtl),
-                        Some(&mapper),
+                        mapper_dyn,
                         |device_id| {
                             let hv_device = partition.new_virtual_device(
                                 match dev_cfg.vtl {
@@ -2238,7 +2285,7 @@ impl InitializedVm {
                                 ),
                                 partition.clone().into_doorbell_registration(Vtl::Vtl0),
                                 &mut services.register_mmio(),
-                                Some(&mapper),
+                                mapper_dyn,
                             )
                         })?;
                 }
@@ -2709,7 +2756,7 @@ impl LoadedVm {
                         let mut stopped = false;
                         // First run the non-destructive operations.
                         let r = async {
-                            let shared_memory = self.inner.memory_manager.shared_memory_backing();
+                            let shared_memory = self.inner.memory_manager.as_ref().and_then(|mm| mm.shared_memory_backing());
                             if shared_memory.is_none() {
                                 anyhow::bail!("restart is not supported with --private-memory");
                             }
@@ -2738,7 +2785,7 @@ impl LoadedVm {
                         }
                     }
                     WorkerRpc::Inspect(deferred) => deferred.respond(|resp| {
-                        resp.field("memory", &self.inner.memory_manager)
+                        resp.field("memory", self.inner.memory_manager.as_ref())
                             .field("memory_layout", &self.inner.mem_layout)
                             .field("resolver", &self.inner.resolver)
                             .field("vmgs", &self.inner.vmgs_client_inspect_handle);
