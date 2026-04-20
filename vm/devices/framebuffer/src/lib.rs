@@ -230,7 +230,7 @@ struct FramebufferInner {
     mapping_state: Option<MappingState>,
     format: FramebufferFormat,
     #[inspect(skip)]
-    mapper: Box<dyn MemoryMapper>,
+    mapper: Arc<dyn MemoryMapper>,
 }
 
 #[derive(Inspect)]
@@ -265,7 +265,7 @@ impl FramebufferDevice {
     /// using the given mapper. Optionally creates a second mapping that does
     /// not move once the VM is started. This can be used fo VTL2 to read from.
     pub fn new(
-        mapper: Box<dyn MemoryMapper>,
+        mapper: Arc<dyn MemoryMapper>,
         framebuffer: Framebuffer,
         framebuffer_gpa_base_fixed: Option<u64>,
     ) -> anyhow::Result<Self> {

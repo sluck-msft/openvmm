@@ -385,6 +385,32 @@ impl Worker for VmWorker {
     }
 }
 
+/// Guest memory configuration provided by an external hypervisor backend
+/// (one that manages guest RAM in-kernel rather than via `membacking`).
+pub(crate) struct ExternalGuestMemory {
+    /// The guest memory accessor.
+    pub guest_memory: GuestMemory,
+    /// Optional device memory mapper for ROM, framebuffer, and VirtIO shared
+    /// memory.
+    pub device_memory_mapper: Option<Arc<dyn guestmem::MemoryMapper>>,
+}
+
+/// How guest memory backing is provided for this VM.
+///
+/// Standard backends (WHP, KVM, HVF, MSHV) use a [`GuestMemoryManager`] from
+/// `membacking` that handles VA-backed memory, partition attachment, device
+/// memory mapping, and RAM visibility control. External backends (VID) manage
+/// guest RAM in-kernel and optionally provide a device memory mapper for
+/// ROM/framebuffer/VirtIO shared memory.
+pub(crate) enum MemoryManagerMode {
+    /// Memory managed by `membacking`.
+    Managed(GuestMemoryManager),
+    /// Memory managed externally by the hypervisor backend.
+    External {
+        device_memory_mapper: Option<Arc<dyn guestmem::MemoryMapper>>,
+    },
+}
+
 /// A VM that has been initialized but not yet loaded (i.e. the saved state is
 /// not yet available).
 pub(crate) struct InitializedVm {
@@ -392,7 +418,7 @@ pub(crate) struct InitializedVm {
     vps: Vec<Box<dyn BindHvliteVp>>,
     vmtime_keeper: VmTimeKeeper,
     vmtime_source: VmTimeSource,
-    memory_manager: Option<GuestMemoryManager>,
+    memory_mode: MemoryManagerMode,
     gm: GuestMemory,
     cfg: Manifest,
     mem_layout: MemoryLayout,
@@ -773,7 +799,7 @@ impl InitializedVm {
         platform_info: virt::PlatformInfo,
         cfg: Manifest,
         shared_memory: Option<SharedMemoryBacking>,
-        external_guest_memory: Option<GuestMemory>,
+        external_memory: Option<ExternalGuestMemory>,
     ) -> anyhow::Result<Self>
     where
         H: virt::Hypervisor<Partition = P>,
@@ -926,63 +952,59 @@ impl InitializedVm {
             anyhow::bail!("hugepage_size={size} requires hugepages=on");
         }
 
-        let (memory_manager, gm) = if let Some(gm) = external_guest_memory {
-            // The backend provided its own GuestMemory - skip membacking.
-            (None, gm)
-        } else {
-            let mut memory_builder = GuestMemoryBuilder::new();
-            memory_builder = memory_builder
-                .existing_backing(shared_memory)
-                .vtl0_alias_map(vtl0_alias_map)
-                .prefetch_ram(cfg.memory.prefetch_memory)
-                .private_memory(cfg.memory.private_memory)
-                .transparent_hugepages(cfg.memory.transparent_hugepages)
-                .x86_legacy_support(
-                    matches!(cfg.load_mode, LoadMode::Pcat { .. }) || cfg.chipset.with_hyperv_vga,
-                );
-            if cfg.memory.hugepages {
-                memory_builder = memory_builder.hugepages(cfg.memory.hugepage_size);
-            }
-
-            #[cfg(all(windows, feature = "virt_whp"))]
-            if !cfg.vpci_resources.is_empty() {
-                memory_builder = memory_builder.pin_mappings(true);
-            }
-
-            cfg_if! {
-                if #[cfg(windows)] {
-                    let vtl2_memory_process = if cfg.hypervisor.with_vtl2.is_some() {
-                        // VTL2 needs a separate memory hosting process.
-                        let process = pal::windows::process::empty_process()
-                            .context("could not launch a memory process for VTL2")?;
-                        Some(Box::new(process) as _)
-                    } else {
-                        None
-                    };
-                } else {
-                    let vtl2_memory_process = None;
+        let (mut memory_manager, vtl2_memory_process, gm, external_device_memory_mapper) =
+            if let Some(ext) = external_memory {
+                // The backend provided its own GuestMemory - skip membacking.
+                (None, None, ext.guest_memory, ext.device_memory_mapper)
+            } else {
+                let mut memory_builder = GuestMemoryBuilder::new();
+                memory_builder = memory_builder
+                    .existing_backing(shared_memory)
+                    .vtl0_alias_map(vtl0_alias_map)
+                    .prefetch_ram(cfg.memory.prefetch_memory)
+                    .private_memory(cfg.memory.private_memory)
+                    .transparent_hugepages(cfg.memory.transparent_hugepages)
+                    .x86_legacy_support(
+                        matches!(cfg.load_mode, LoadMode::Pcat { .. })
+                            || cfg.chipset.with_hyperv_vga,
+                    );
+                if cfg.memory.hugepages {
+                    memory_builder = memory_builder.hugepages(cfg.memory.hugepage_size);
                 }
-            }
 
-            let memory_manager = memory_builder
-                .build(&mem_layout)
-                .await
-                .context("failed to build guest memory")?;
+                #[cfg(all(windows, feature = "virt_whp"))]
+                if !cfg.vpci_resources.is_empty() {
+                    memory_builder = memory_builder.pin_mappings(true);
+                }
 
-            let gm = memory_manager
-                .client()
-                .guest_memory()
-                .await
-                .context("failed to get guest memory")?;
+                cfg_if! {
+                    if #[cfg(windows)] {
+                        let vtl2_memory_process = if cfg.hypervisor.with_vtl2.is_some() {
+                            // VTL2 needs a separate memory hosting process.
+                            let process = pal::windows::process::empty_process()
+                                .context("could not launch a memory process for VTL2")?;
+                            Some(Box::new(process) as _)
+                        } else {
+                            None
+                        };
+                    } else {
+                        let vtl2_memory_process = None;
+                    }
+                }
 
-            (Some((memory_manager, vtl2_memory_process)), gm)
-        };
+                let memory_manager = memory_builder
+                    .build(&mem_layout)
+                    .await
+                    .context("failed to build guest memory")?;
 
-        // Unpack the memory manager tuple if present.
-        let (mut memory_manager, vtl2_memory_process) = match memory_manager {
-            Some((mm, vmp)) => (Some(mm), vmp),
-            None => (None, None),
-        };
+                let gm = memory_manager
+                    .client()
+                    .guest_memory()
+                    .await
+                    .context("failed to get guest memory")?;
+
+                (Some(memory_manager), vtl2_memory_process, gm, None)
+            };
 
         let mut cpuid = Vec::new();
 
@@ -1026,12 +1048,19 @@ impl InitializedVm {
             }
         }
 
+        let memory_mode = match memory_manager {
+            Some(mm) => MemoryManagerMode::Managed(mm),
+            None => MemoryManagerMode::External {
+                device_memory_mapper: external_device_memory_mapper,
+            },
+        };
+
         Ok(Self {
             partition,
             vps,
             vmtime_keeper,
             vmtime_source,
-            memory_manager,
+            memory_mode,
             gm,
             cfg,
             mem_layout,
@@ -1057,7 +1086,7 @@ impl InitializedVm {
             vps,
             vmtime_keeper,
             vmtime_source,
-            memory_manager,
+            memory_mode,
             gm,
             cfg,
             mem_layout,
@@ -1065,6 +1094,20 @@ impl InitializedVm {
             igvm_file,
             driver_source,
         } = self;
+
+        // Split the memory mode into its components for use during load.
+        // `memory_manager` is stored in LoadedVmInner for ram visibility
+        // control, shared memory backing, and inspect. `mapper` provides
+        // device memory mapping (ROM, framebuffer, VirtIO shared memory).
+        let (memory_manager, mapper) = match memory_mode {
+            MemoryManagerMode::Managed(mm) => {
+                let mapper: Arc<dyn guestmem::MemoryMapper> = Arc::new(mm.device_memory_mapper());
+                (Some(mm), Some(mapper))
+            }
+            MemoryManagerMode::External {
+                device_memory_mapper,
+            } => (None, device_memory_mapper),
+        };
 
         let mut resolver = ResourceResolver::new();
 
@@ -1154,9 +1197,7 @@ impl InitializedVm {
             cfg.firmware_event_send.clone(),
         ));
 
-        let mapper = memory_manager.as_ref().map(|mm| mm.device_memory_mapper());
-        let mapper_dyn: Option<&dyn guestmem::MemoryMapper> =
-            mapper.as_ref().map(|m| m as &dyn guestmem::MemoryMapper);
+        let mapper_dyn: Option<&dyn guestmem::MemoryMapper> = mapper.as_deref();
 
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let mut deps_hyperv_firmware_pcat = None;
@@ -1243,12 +1284,9 @@ impl InitializedVm {
                 tracing::debug!(?firmware, "Loading BIOS firmware.");
                 let rom_builder = RomBuilder::new(
                     "bios".into(),
-                    Box::new(
-                        mapper
-                            .as_ref()
-                            .context("PCAT firmware requires a device memory mapper")?
-                            .clone(),
-                    ),
+                    mapper
+                        .clone()
+                        .context("PCAT firmware requires a device memory mapper")?,
                 );
                 let rom = rom_builder.build_from_file_location(firmware)?;
                 // TODO: move mtrr replay to a resource.
@@ -1589,12 +1627,9 @@ impl InitializedVm {
         let deps_hyperv_framebuffer = (cfg.chipset.with_hyperv_framebuffer)
             .then(|| -> anyhow::Result<_> {
                 Ok(dev::HyperVFramebufferDeps {
-                    fb_mapper: Box::new(
-                        mapper
-                            .as_ref()
-                            .context("framebuffer requires a device memory mapper")?
-                            .clone(),
-                    ),
+                    fb_mapper: mapper
+                        .clone()
+                        .context("framebuffer requires a device memory mapper")?,
                     fb: cfg.framebuffer.unwrap(),
                     vtl2_framebuffer_gpa_base,
                 })
@@ -1612,12 +1647,9 @@ impl InitializedVm {
             let vga_firmware = cfg.vga_firmware.as_ref().context("no VGA BIOS file")?;
             let rom_builder = RomBuilder::new(
                 "vga".into(),
-                Box::new(
-                    mapper
-                        .as_ref()
-                        .context("VGA ROM requires a device memory mapper")?
-                        .clone(),
-                ),
+                mapper
+                    .clone()
+                    .context("VGA ROM requires a device memory mapper")?,
             );
             let rom = rom_builder.build_from_file_location(vga_firmware)?;
 
@@ -1878,7 +1910,7 @@ impl InitializedVm {
         // Register the VFIO resolver, which spawns a container manager task
         // internally to share containers across assigned devices.
         #[cfg(target_os = "linux")]
-        let vfio_inspect = {
+        let vfio_inspect = if let Some(memory_manager) = &memory_manager {
             let vfio_resolver = vfio_assigned_device::resolver::VfioDeviceResolver::new(
                 driver_source.builder().build("vfio-container-mgr"),
                 memory_manager.dma_mapper_client(),
@@ -1891,6 +1923,8 @@ impl InitializedVm {
                 _,
             >(vfio_resolver);
             Some(handle)
+        } else {
+            None
         };
 
         // Resolve PCIe devices concurrently.
@@ -1900,7 +1934,7 @@ impl InitializedVm {
             let resolver = &resolver;
             let gm = &gm;
             let partition = &partition;
-            let mapper = &mapper;
+            let _mapper = &mapper;
             async move {
                 vmm_core::device_builder::build_pcie_device(
                     chipset_builder,

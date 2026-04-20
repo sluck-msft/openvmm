@@ -12,12 +12,14 @@
 //! instance (e.g. `virt_kvm::Kvm`).
 
 use crate::partition::HvlitePartition;
+use crate::worker::dispatch::ExternalGuestMemory;
 use crate::worker::dispatch::InitializedVm;
 use crate::worker::dispatch::Manifest;
 use futures::future::BoxFuture;
 use guestmem::GuestMemory;
 use hypervisor_resources::HypervisorKind;
 use membacking::SharedMemoryBacking;
+use std::sync::Arc;
 use vm_resource::CanResolveTo;
 use vmcore::vm_task::VmTaskDriverSource;
 
@@ -92,7 +94,14 @@ impl ResolvedHypervisorBackend {
     ///
     /// Use this for backends that manage guest memory in-kernel (e.g. VID)
     /// and need to supply their own memory access implementation.
-    pub fn new_with_guest_memory<H>(hypervisor: H, guest_memory: GuestMemory) -> Self
+    ///
+    /// Optionally provides a device memory mapper for mapping file-backed
+    /// memory (ROM, framebuffer, VirtIO shared memory) into guest GPA space.
+    pub fn new_with_guest_memory<H>(
+        hypervisor: H,
+        guest_memory: GuestMemory,
+        device_memory_mapper: Option<Arc<dyn guestmem::MemoryMapper>>,
+    ) -> Self
     where
         H: HypervisorBackend,
         for<'a> H::ProtoPartition<'a>: Send,
@@ -107,7 +116,10 @@ impl ResolvedHypervisorBackend {
                     platform_info,
                     cfg,
                     shared_memory,
-                    Some(guest_memory),
+                    Some(ExternalGuestMemory {
+                        guest_memory,
+                        device_memory_mapper,
+                    }),
                 )
                 .await
             })

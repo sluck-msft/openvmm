@@ -15,9 +15,10 @@ use openvmm_pcat_locator::RomFileLocation;
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
+use std::sync::Arc;
 
 pub struct Rom {
-    mapper: Box<dyn MemoryMapper>,
+    mapper: Arc<dyn MemoryMapper>,
     name: String,
     len: u64,
     backing: sparse_mmap::Mappable,
@@ -25,11 +26,11 @@ pub struct Rom {
 
 pub struct RomBuilder {
     name: String,
-    mapper: Box<dyn MemoryMapper>,
+    mapper: Arc<dyn MemoryMapper>,
 }
 
 impl RomBuilder {
-    pub fn new(name: String, mapper: Box<dyn MemoryMapper>) -> Self {
+    pub fn new(name: String, mapper: Arc<dyn MemoryMapper>) -> Self {
         Self { name, mapper }
     }
 

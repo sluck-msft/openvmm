@@ -1395,7 +1395,7 @@ pub mod options {
         // video devices.
         #[expect(missing_docs)] // see TODO above
         pub struct HyperVFramebufferDeps {
-            pub fb_mapper: Box<dyn guestmem::MemoryMapper>,
+            pub fb_mapper: Arc<dyn guestmem::MemoryMapper>,
             pub fb: Framebuffer,
             pub vtl2_framebuffer_gpa_base: Option<u64>,
         }
