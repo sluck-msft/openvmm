@@ -81,9 +81,9 @@ impl<R> Loader<'_, R> {
                     // TODO: These are required for hardware isolation but
                     // support for that doesn't exist in any virt backend yet.
                     // Handling these will require more virt::generic types.
-                    BootPageAcceptance::VpContext => todo!(),
+                    BootPageAcceptance::VpContext => PageVisibility::VpContext,
                     BootPageAcceptance::ErrorPage => todo!(),
-                    BootPageAcceptance::SecretsPage => todo!(),
+                    BootPageAcceptance::SecretsPage => PageVisibility::Secrets,
                     BootPageAcceptance::CpuidPage => todo!(),
                     BootPageAcceptance::CpuidExtendedStatePage => todo!(),
                 };

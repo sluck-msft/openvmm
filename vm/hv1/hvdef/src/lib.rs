@@ -4449,3 +4449,65 @@ pub struct HvX64InterruptControllerState {
     pub apic_divide_configuration: u32,
     pub apic_remote_read: u32,
 }
+
+#[bitfield(u64)]
+#[derive(IntoBytes, Immutable, FromBytes)]
+pub struct HvSnpGuestPolicy {
+    pub minor_version: u8,
+    pub major_version: u8,
+    pub smt_allowed: bool,
+    pub vmpls_required: bool,
+    pub migration_agent_allowed: bool,
+    pub debug_allowed: bool,
+    #[bits(44)]
+    _reserved: u64,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Immutable, IntoBytes, FromBytes)]
+pub struct HvSnpIdBlock {
+    pub launch_digest: [u8; 48],
+    pub family_id: [u8; 16],
+    pub image_id: [u8; 16],
+    pub version: u32,
+    pub guest_svn: u32,
+    pub policy: HvSnpGuestPolicy,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Immutable, IntoBytes, FromBytes)]
+pub struct HvSnpIdAuthInfo {
+    pub id_key_algorithm: u32,
+    pub auth_key_algorithm: u32,
+    pub reserved0: [u8; 56],
+    pub id_block_signature: [u8; 512],
+    pub id_key: [u8; 1028],
+    pub reserved1: [u8; 60],
+    pub id_key_signature: [u8; 512],
+    pub author_key: [u8; 1028],
+}
+
+// ||0:9: kd> dt HV_PSP_LAUNCH_FINISH_DATA
+//    +0x000 IdBlock          : _HV_SNP_ID_BLOCK
+//    +0x060 IdAuthInfo       : _HV_SNP_ID_AUTH_INFO
+//    +0xce4 HostData         : [32] UChar
+//    +0xd04 IdBlockEnabled   : UChar
+//    +0xd05 AuthorKeyEnabled : UChar
+
+#[repr(C)]
+#[derive(Copy, Clone, Immutable, IntoBytes, FromBytes)]
+pub struct HvPspLaunchFinishData {
+    pub id_block: HvSnpIdBlock,
+    pub id_auth_info: HvSnpIdAuthInfo,
+    pub host_data: [u8; 32],
+    pub id_block_enabled: u8,
+    pub author_key_enabled: u8,
+    pub padding: [u8; 2],
+}
+
+#[repr(C)]
+#[derive(Immutable, IntoBytes, FromBytes)]
+pub struct HvPartitionCompleteIsolatedImportData {
+    pub psp_parameters: HvPspLaunchFinishData,
+}
+const _: () = assert!(size_of::<HvPartitionCompleteIsolatedImportData>() == 0xd08);

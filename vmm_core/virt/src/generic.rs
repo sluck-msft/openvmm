@@ -141,6 +141,10 @@ pub enum PageVisibility {
     Exclusive,
     /// The page has shared access with the guest and host.
     Shared,
+    /// Page has secrets (TODO)
+    Secrets,
+    /// Page has VpContext (TODO)
+    VpContext,
 }
 
 /// Prototype partition creation configuration.
